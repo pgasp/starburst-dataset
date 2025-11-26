@@ -1,3 +1,4 @@
 .DS_Store
+.env
 /.venv
 /src/shared_tools/__pycache__
