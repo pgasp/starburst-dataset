@@ -1,4 +1,3 @@
 .DS_Store
-cib_esg/.env
-/dataproducts/__pycache__
-/utils/__pycache__
+/.venv
+/src/shared_tools/__pycache__

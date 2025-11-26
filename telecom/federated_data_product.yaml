@@ -1,0 +1,108 @@
+# telecom/federated_data_product.yaml
+
+# --- FEDERATED (OSS/BSS) DATA PRODUCT ---
+name: "Telecom Federated Churn Analysis"
+description: "Semantic layer joining customer (BSS) data with network quality (OSS) data to identify churn risk and service impacting issues."
+summary: "Views for Churn Prediction and Service Quality Impact"
+
+# DATA PRODUCT DESTINATION (Schema 3: Federated)
+domain: "Telecom"
+catalog: ${TELECOM_FEDERATED_DP_CATALOG}
+schema: ${TELECOM_FEDERATED_DP_SCHEMA}
+
+owners:
+  - name: "Data Science & CX Team"
+    email: "ds@telecom.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. High-Risk Churn Segments (Usage, Revenue, and Network Quality)
+  - name: "v_churn_risk_segment"
+    description: "Joins customer risk score (BSS) with average data usage and network performance."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH CustomerNetworkQuality AS (
+          SELECT
+              u.SubscriptionID,
+              AVG(CASE WHEN u.UsageType = 'Data_MB' THEN u.UsageValue END) AS AvgDailyDataUsage,
+              AVG(np.Latency_ms) AS AvgLatency_ms -- Assumption: We can aggregate performance to subscription via usage
+          FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.customer_usage u
+          JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.network_performance np 
+              ON u.CellSiteID = np.CellSiteID -- Simplistic join via CellSite, assumes average performance holds for usage
+          WHERE u.UsageDate >= (NOW() - INTERVAL '7' DAY)
+          GROUP BY 1
+      )
+      SELECT
+          c.CustomerID,
+          c.CustomerSegment,
+          s.ProductID,
+          c.ChurnRiskScore,
+          cnq.AvgDailyDataUsage,
+          cnq.AvgLatency_ms
+      FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.customers c
+      JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.service_subscriptions s ON c.CustomerID = s.CustomerID
+      LEFT JOIN CustomerNetworkQuality cnq ON s.SubscriptionID = cnq.SubscriptionID
+      WHERE c.ChurnRiskScore > 0.70 AND cnq.AvgLatency_ms > 120
+      
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Identifier for the customer."
+      - name: "CustomerSegment"
+        type: "varchar"
+        description: "Customer type (e.g., Residential, Business-SME)."
+      - name: "ChurnRiskScore"
+        type: "double"
+        description: "The calculated BSS churn risk score."
+      - name: "AvgDailyDataUsage"
+        type: "double"
+        description: "Average daily data consumption (MB)."
+      - name: "AvgLatency_ms"
+        type: "double"
+        description: "Average network latency experienced by the subscription."
+
+  # 2. Revenue Impact of Network Faults
+  - name: "v_fault_revenue_impact"
+    description: "Aggregates revenue loss by network fault severity."
+    security_mode: "INVOKER" 
+    
+    query: |
+      -- NOTE: Requires a complex time-series join to accurately map fault downtime to revenue loss.
+      -- We will simplify by linking fault location to subscriptions in that region.
+      WITH SiteAffectedSubscriptions AS (
+          SELECT DISTINCT u.CellSiteID, u.SubscriptionID
+          FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.customer_usage u
+      ),
+      FaultImpact AS (
+          SELECT
+              f.FaultID,
+              f.Severity,
+              s.SubscriptionID,
+              ss.MonthlyFee
+          FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.fault_records f
+          JOIN SiteAffectedSubscriptions sas ON f.CellSiteID = sas.CellSiteID
+          JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.service_subscriptions ss ON sas.SubscriptionID = ss.SubscriptionID
+          WHERE f.ResolutionTime_min > 60 -- Only consider prolonged faults
+      )
+      SELECT
+          Severity,
+          COUNT(DISTINCT SubscriptionID) AS SubscriptionsAffected,
+          SUM(MonthlyFee) AS PotentialMonthlyRevenueLoss
+      FROM FaultImpact
+      GROUP BY 1
+      ORDER BY 3 DESC
+      
+    columns:
+      - name: "Severity"
+        type: "varchar"
+        description: "Severity of the network fault (e.g., Critical, Major)."
+      - name: "SubscriptionsAffected"
+        type: "bigint"
+        description: "Count of unique subscriptions impacted by prolonged faults."
+      - name: "PotentialMonthlyRevenueLoss"
+        type: "double"
+        description: "Sum of Monthly Recurring Revenue (MRR) for affected subscriptions."

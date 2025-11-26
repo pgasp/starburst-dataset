@@ -98,7 +98,7 @@ def upload_single_table_batched(table_name: str, df: pd.DataFrame, engine: Engin
         }
 
 # --- Utility 3: Parallel Upload Manager ---
-def upload_to_starburst_parallel(engine: Engine, schema: str, dataframes_dict: Dict[str, pd.DataFrame], max_workers: int = 6, batch_size: int = 10000):
+def upload_to_starburst_parallel(engine: Engine, schema: str, dataframes_dict: Dict[str, pd.DataFrame], max_workers: int = 6, batch_size: int = 5000):
     """Manages the parallel upload of all DataFrames."""
     results = []
     num_tables = len(dataframes_dict)

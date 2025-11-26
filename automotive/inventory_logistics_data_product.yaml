@@ -1,0 +1,93 @@
+# automotive/inventory_logistics_data_product.yaml
+
+# --- INVENTORY & LOGISTICS DATA PRODUCT ---
+name: "Auto Manufacturing Inventory & Stock"
+description: "Semantic layer for tracking component stock levels, identifying reorder points, and managing storage locations."
+summary: "Views for Stock Control and Procurement Risk"
+
+# DATA PRODUCT DESTINATION (Schema 1: Inventory)
+domain: "Automotive Manufacturing"
+catalog: ${AUTOMOTIVE_INVENTORY_DP_CATALOG}
+schema: ${AUTOMOTIVE_INVENTORY_DP_SCHEMA}
+
+owners:
+  - name: "Logistics Management"
+    email: "logistics@auto-corp.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Reorder Point Status (Stock Management)
+  - name: "v_reorder_point_status"
+    description: "Aggregates total stock per part and flags parts that are below a safe minimum threshold (e.g., 20% of MaxStockLevel)."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH TotalStock AS (
+          SELECT
+              PartID,
+              SUM(CurrentStock) AS TotalCurrentStock
+          FROM ${AUTOMOTIVE_RAW_CATALOG}.${AUTOMOTIVE_RAW_SCHEMA}.inventory_levels
+          GROUP BY 1
+      )
+      SELECT
+          p.PartID,
+          p.PartName,
+          ts.TotalCurrentStock,
+          p.MaxStockLevel,
+          p.MaxStockLevel * 0.20 AS ReorderThreshold, -- 20% threshold
+          CASE
+              WHEN ts.TotalCurrentStock < p.MaxStockLevel * 0.20 THEN 'CRITICAL'
+              WHEN ts.TotalCurrentStock < p.MaxStockLevel * 0.50 THEN 'WARNING'
+              ELSE 'SAFE'
+          END AS StockStatus
+      FROM ${AUTOMOTIVE_RAW_CATALOG}.${AUTOMOTIVE_RAW_SCHEMA}.parts p
+      JOIN TotalStock ts ON p.PartID = ts.PartID
+      
+    columns:
+      - name: "PartID"
+        type: "varchar"
+        description: "Unique identifier for the component."
+      - name: "PartName"
+        type: "varchar"
+        description: "Name of the component."
+      - name: "TotalCurrentStock"
+        type: "bigint"
+        description: "Total inventory across all storage locations."
+      - name: "ReorderThreshold"
+        type: "double"
+        description: "The calculated stock level that triggers a warning."
+      - name: "StockStatus"
+        type: "varchar"
+        description: "Categorical status (CRITICAL, WARNING, SAFE)."
+
+  # 2. Inventory by Location (Logistics)
+  - name: "v_inventory_by_location"
+    description: "Detailed breakdown of current stock by Part Type and physical storage Location."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          il.LocationID,
+          p.PartType,
+          SUM(il.CurrentStock) AS StockVolume,
+          MAX(il.LastUpdated) AS LastInventoryActivity
+      FROM ${AUTOMOTIVE_RAW_CATALOG}.${AUTOMOTIVE_RAW_SCHEMA}.inventory_levels il
+      JOIN ${AUTOMOTIVE_RAW_CATALOG}.${AUTOMOTIVE_RAW_SCHEMA}.parts p ON il.PartID = p.PartID
+      GROUP BY 1, 2
+      
+    columns:
+      - name: "LocationID"
+        type: "varchar"
+        description: "Physical storage zone identifier."
+      - name: "PartType"
+        type: "varchar"
+        description: "Category of the component (e.g., Engine, Chassis)."
+      - name: "StockVolume"
+        type: "bigint"
+        description: "Total stock quantity in this location/type combination."
+      - name: "LastInventoryActivity"
+        type: "timestamp"
+        description: "Timestamp of the most recent stock update."

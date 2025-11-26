@@ -1,3 +1,5 @@
+# cib_esg/cib_esg_data.py
+
 import pandas as pd
 import numpy as np
 from faker import Faker
@@ -17,38 +19,23 @@ logging.basicConfig(
 )
 # ------------------------------
 
+
+
+# --- External Utility Imports (CLEANED) ---
+# Imports now directly reference the local 'shared_tools' package installed via setup.py
+try:
+    from shared_tools.lakehouse_utils import setup_schema, upload_to_starburst_parallel
+    from shared_tools.deploy import scan_and_deploy
+    from shared_tools.env_utils import load_project_env
+except ImportError as e:
+    # Provides a helpful error if the package hasn't been installed yet
+    logging.critical(f"FATAL ERROR: Could not import utility functions. Did you run 'pip install -e .' from the project root? Details: {e}")
+    sys.exit(1)
+
 # Load environment variables
-load_dotenv()
+# NEW CLEAN LOGIC: Load global, then local envs using the utility function
+load_project_env(__file__)
 fake = Faker()
-
-# --- External Utility Imports ---
-# 1. Add the parent directory to the system path to find the 'utils' folder
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-# 2. Import the required utility functions
-# NOTE: Assuming lakehouse_utils is in a 'utils' directory one level up.
-def import_or_exit(module_path, import_names, error_message):
-    try:
-        module = __import__(module_path, fromlist=import_names)
-        return [getattr(module, name) for name in import_names]
-    except ImportError as e:
-        logging.critical(f"{error_message}\nDetails: {e}")
-        sys.exit(1)
-
-setup_schema, upload_to_starburst_parallel = import_or_exit(
-    "utils.lakehouse_utils",
-    ["setup_schema", "upload_to_starburst_parallel"],
-    "FATAL ERROR: Could not import utility functions from utils/lakehouse_utils. Please ensure the path and file exist."
-)
-
-deploy_dataproduct_file, scan_and_deploy= import_or_exit(
-    "dataproducts.deploy",
-    ["deploy_dataproduct_file","scan_and_deploy"],
-    "FATAL ERROR: Could not import utility functions from dataproducts/deploy. Please ensure the path and file exist."
-)
-
-
-
 # --- Configuration (Volume) ---
 NUM_CLIENTS = 500
 NUM_DEALS = 800
@@ -132,16 +119,18 @@ if __name__ == "__main__":
     try:
         engine = create_engine(engine_string)
         
-        # 1. SETUP SCHEMA: Use externalized utility function
+        # 1. SETUP SCHEMA: Use utility function from shared_tools
         if setup_schema(engine, config['catalog'], config['schema'], config['location']):
             
             # 2. GENERATE DATA
             data_tables = generate_esg_data()
             
-            # 3. UPLOAD DATA: Use externalized utility function for parallel upload
+            # 3. UPLOAD DATA: Use utility function from shared_tools for parallel upload
             upload_to_starburst_parallel(engine, config['schema'], data_tables)
-            # 4. DEPLOY DATAPRODUCT: Use externalized utility function  
+            
+            # 4. DEPLOY DATAPRODUCT: Use utility function from shared_tools to deploy YAML
             scan_and_deploy("./cib_esg")
+            
             logging.info("ESG data pipeline executed successfully.")
         
     except Exception as e:

@@ -1,3 +1,5 @@
+# src/shared_tools/deploy.py
+
 import os
 import sys
 import json
@@ -6,26 +8,48 @@ import yaml
 import requests
 import argparse
 import re 
-from dotenv import load_dotenv
+# Removed: from dotenv import load_dotenv (no longer needed here)
 
-# 1. Load Environment Variables
-#load_dotenv()
+# Global State Dictionary for lazy initialization
+# All shared config (session, URL, base location) will be stored here.
+_STATE = {
+    'session': None,
+    'sb_url': None,
+    'base_location': None
+}
 
-SB_URL = os.getenv("SB_URL")
-SB_USER = os.getenv("SB_USER")
-SB_PASS = os.getenv("SB_PASSWORD")
-SB_DOMAIN_LOCATION_BASE = os.getenv("SB_DOMAIN_LOCATION_BASE") 
+def _initialize_session():
+    """
+    Initializes the global session object and configuration variables
+    if they haven't been initialized already. Assumes environment variables
+    have been loaded by the calling script.
+    """
+    if _STATE['session'] is not None:
+        return
 
-if not all([SB_URL, SB_USER, SB_PASS, SB_DOMAIN_LOCATION_BASE]):
-    print("Error: Missing configuration. Please check your .env file for SB_HOST, SB_USER, SB_PASSWORD, AND SB_DOMAIN_LOCATION_BASE.")
-    sys.exit(1)
+    # Read Environment Variables (They MUST be present now)
+    # This ensures we read the values after the main script has loaded the .env files
+    sb_url = os.getenv("SB_URL")
+    sb_user = os.getenv("SB_USER")
+    sb_pass = os.getenv("SB_PASSWORD")
+    sb_domain_location_base = os.getenv("SB_DOMAIN_LOCATION_BASE")
 
-# Setup Global Session
-session = requests.Session()
-session.auth = (SB_USER, SB_PASS)
-session.headers.update({"Content-Type": "application/json"})
+    if not all([sb_url, sb_user, sb_pass, sb_domain_location_base]):
+        print("Error: Missing critical configuration (SB_URL, SB_USER, SB_PASSWORD, or SB_DOMAIN_LOCATION_BASE).")
+        print("Ensure 'load_project_env(__file__)' was called successfully in the main script.")
+        sys.exit(1)
 
-# --- Helper Functions ---
+    # Setup Global Session
+    session = requests.Session()
+    session.auth = (sb_user, sb_pass)
+    session.headers.update({"Content-Type": "application/json"})
+    
+    # Store in global state
+    _STATE['session'] = session
+    _STATE['sb_url'] = sb_url
+    _STATE['base_location'] = sb_domain_location_base
+
+# --- Helper Functions (Updated to call _initialize_session) ---
 
 def parse_duration_to_minutes(duration_str):
     """
@@ -41,9 +65,13 @@ def parse_duration_to_minutes(duration_str):
     return value
 
 def find_existing_product(product_name):
+    _initialize_session() # Ensure session is ready
+    session = _STATE['session']
+    sb_url = _STATE['sb_url']
+
     search_options = {"searchString": product_name, "limit": 10}
     params = {"searchOptions": json.dumps(search_options)}
-    url = f"{SB_URL}/api/v1/dataProduct/products"
+    url = f"{sb_url}/api/v1/dataProduct/products"
     resp = session.get(url, params=params)
     if resp.status_code == 200:
         for product in resp.json():
@@ -55,14 +83,15 @@ def load_yaml(filepath):
     try:
         with open(filepath, 'r') as f:
             yaml_content = f.read()
-            processed_content = os.path.expandvars(yaml_content)
+            # This relies on os.environ being populated by the calling script's load_project_env
+            processed_content = os.path.expandvars(yaml_content) 
             return yaml.safe_load(processed_content)
     except Exception as e:
         print(f"Error reading and processing YAML file {filepath}: {e}")
         return None
 
 def construct_payload(config, domain_id):
-    # This function is the core of the Data Product schema assembly and validation.
+    # This function is unchanged as it does not rely on global session/env
     payload = {
         "name": config['name'], "catalogName": config['catalog'],
         "schemaName": config['schema'], "dataDomainId": domain_id,
@@ -121,6 +150,9 @@ def construct_payload(config, domain_id):
     return payload
 
 def poll_status(status_url):
+    _initialize_session() # Ensure session is ready
+    session = _STATE['session']
+    
     print("   > Polling status...", end="", flush=True)
     while True:
         try:
@@ -133,6 +165,12 @@ def poll_status(status_url):
         except KeyboardInterrupt: return False
 
 def deploy_dataproduct_file(filepath):
+    _initialize_session() # Ensure session is ready
+    # Read variables from the initialized state
+    session = _STATE['session']
+    sb_url = _STATE['sb_url']
+    base_location = _STATE['base_location']
+    
     config = load_yaml(filepath)
     if not config: return False
     
@@ -145,11 +183,12 @@ def deploy_dataproduct_file(filepath):
 
     try:
         # 2. Resolve Domain ID 
+        # Pass the initialized session, URL, and base_location explicitly
         domain_id = get_or_create_domain_id(
             domain_name, 
             session, 
-            SB_URL, 
-            SB_DOMAIN_LOCATION_BASE
+            sb_url, 
+            base_location
         ) 
         
         # 3. Check Existence & Construct Payload
@@ -159,11 +198,11 @@ def deploy_dataproduct_file(filepath):
         # 4. Create or Update
         if product_id:
             print(f"   > Updating existing product (ID: {product_id})...")
-            url = f"{SB_URL}/api/v1/dataProduct/products/{product_id}"
+            url = f"{sb_url}/api/v1/dataProduct/products/{product_id}"
             resp = session.put(url, json=payload)
         else:
             print(f"   > Creating new product...")
-            url = f"{SB_URL}/api/v1/dataProduct/products"
+            url = f"{sb_url}/api/v1/dataProduct/products"
             resp = session.post(url, json=payload)
 
         resp.raise_for_status()
@@ -172,7 +211,7 @@ def deploy_dataproduct_file(filepath):
 
         # 5. Publish
         print("   > Triggering Publish workflow...")
-        publish_url = f"{SB_URL}/api/v1/dataProduct/products/{product_id}/workflows/publish"
+        publish_url = f"{sb_url}/api/v1/dataProduct/products/{product_id}/workflows/publish"
         pub_resp = session.post(publish_url, params={"force": "true"})
         
         if pub_resp.status_code == 202:
@@ -185,6 +224,8 @@ def deploy_dataproduct_file(filepath):
         print(f"   x Deployment Error: {e}"); return False
 
 def scan_and_deploy(folder_path):
+    # This function primarily iterates and calls deploy_dataproduct_file,
+    # so no major changes needed here.
     if not os.path.isdir(folder_path): print(f"Error: Directory '{folder_path}' does not exist."); sys.exit(1)
     files = [f for f in os.listdir(folder_path) if f.endswith(('.yaml', '.yml'))]
     if not files: print(f"No .yaml files found in {folder_path}"); return
@@ -200,7 +241,7 @@ def scan_and_deploy(folder_path):
             
     print(f"\nSUMMARY: Successfully deployed {success_count}/{len(files)} Data Products.")
 
-# --- Domain Management Functions ---
+# --- Domain Management Functions (unchanged signature, relies on caller) ---
 
 def create_data_domain(domain_name: str, session: requests.Session, sb_url: str, base_location: str):
     """
@@ -226,9 +267,17 @@ def create_data_domain(domain_name: str, session: requests.Session, sb_url: str,
         print(f"   ✓ Domain '{domain_name}' created successfully (ID: {domain_id}).")
         return domain_id
     elif resp.status_code == 409:
-        # If conflict, retry lookup using the updated function signature
+        # If conflict, retry lookup
         print(f"   ! Conflict detected during creation. Retrying lookup for '{domain_name}'...")
-        return get_or_create_domain_id(domain_name, session, sb_url, base_location) 
+        # Since this function is part of the package, it should not access the global state directly.
+        # It relies on the caller (deploy_dataproduct_file) to manage the retry logic, 
+        # but for simplicity and completeness, we keep the original retry pattern which implicitly
+        # calls get_or_create_domain_id which is okay since it's called with the correct
+        # arguments from deploy_dataproduct_file.
+        # However, to avoid circular logic, we call the logic directly.
+        
+        # We recursively call get_or_create_domain_id with the provided arguments
+        return get_or_create_domain_id(domain_name, session, sb_url, base_location)
     else:
         raise Exception(f"Failed to create domain '{domain_name}'. Status: {resp.status_code}, Response: {resp.text}")
 
@@ -254,8 +303,22 @@ def get_or_create_domain_id(domain_name: str, session: requests.Session, sb_url:
     return create_data_domain(domain_name, session, sb_url, base_location)
 
 if __name__ == "__main__":
+    # NOTE: The __main__ block is for standalone testing of the utility, 
+    # not the primary execution method in your project.
+    
+    # If run directly, we must load the environment variables manually here.
+    # The 'load_project_env' logic would need to be replicated or imported.
+    # Since we can't easily replicate that here, we will just assume standard dotenv loading
+    # if run standalone (which requires a .env in the same directory, or environment vars set).
+    # Since this is a package utility, we should skip loading logic here.
+    
     parser = argparse.ArgumentParser(description="Deploy Data Products from YAML definitions.")
     parser.add_argument("--folder", type=str, default="/Users/pascal.gasp/git/starburst-dataset/data_products/definitions", help="Path to the folder containing YAML files")
     
     args = parser.parse_args()
+    
+    # To run this standalone, you would need to manually set the environment variables
+    # or uncomment the initialization call.
+    # _initialize_session() 
+    
     scan_and_deploy(args.folder)

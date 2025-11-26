@@ -1,7 +1,7 @@
-# --- CIB ESG SEMANTIC LAYER DEFINITION ---
-name: "CIB ESG Portfolio Views"
-description: "A comprehensive semantic layer focusing on client screening, portfolio risk exposure, and detailed environmental/social metrics."
-summary: "Three-Layer Semantic Access to ESG Data"
+# --- CIB ESG SEMANTIC LAYER DEFINITION (Expanded Views) ---
+name: "CIB ESG Comprehensive Views"
+description: "An extensive semantic layer with dedicated views for client risk screening, social/governance metrics, and financed emissions calculations."
+summary: "Five Specialized Views for ESG Analysis"
 
 # DATA PRODUCT DESTINATION (Pulls from your .env variables)
 domain: "Risk & Compliance"
@@ -13,57 +13,79 @@ owners:
     email: "esg-ops@cibbank.com"
 
 # ==============================================================================
-# SEMANTIC VIEWS ONLY (Multiple Layers)
+# SEMANTIC VIEWS ONLY (5 Specialized Views)
 # ==============================================================================
 views:
-  # --- Layer 1: Portfolio Context and Risk Screening ---
-  - name: "v_portfolio_client_risk"
-    description: "Links active financing deals to client entity data and their latest overall ESG score for risk screening."
+  
+  # 1. General Client Scorecard (General View - Score and Metrics)
+  - name: "v_client_esg_alignment"
+    description: "Denormalized client information combined with their latest aggregated ESG scores."
     security_mode: "INVOKER" 
     
     query: |
       WITH LatestRating AS (
           SELECT
-              r.ClientID, r.OverallScore, r.EScore, r.GScore, r."Date",
+              r.*,
               ROW_NUMBER() OVER(PARTITION BY r.ClientID ORDER BY r."Date" DESC) as rn
           FROM ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.esg_ratings r 
       )
       SELECT 
-          d.DealID,
-          d.DealType,
-          d.Amount,
-          d.Sector,
+          c.ClientID,
           c.CompanyName,
           c.Industry,
-          lr.OverallScore AS LatestESGScore,
-          lr.EScore
-      FROM ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.financing_deals d
-      JOIN ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.client_entities c ON d.ClientID = c.ClientID
+          lr.OverallScore,
+          lr.EScore,
+          lr.GScore
+      FROM ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.client_entities c
       LEFT JOIN LatestRating lr ON c.ClientID = lr.ClientID AND lr.rn = 1
-      WHERE d.DealType IN ('Loan', 'Bond') -- Focus on debt exposure
+    
+    columns:
+      - name: "ClientID"
+        type: "varchar"
+        description: "Unique identifier for the financed corporate entity."
+      - name: "OverallScore"
+        type: "double"
+        description: "Latest aggregated ESG score (0-100) from external rating providers."
+      - name: "EScore"
+        type: "integer"
+        description: "Latest Environmental pillar score."
+      - name: "GScore"
+        type: "integer"
+        description: "Latest Governance pillar score."
+
+  # 2. Financed Emissions (View Conversion - Environmental Risk Calculation)
+  - name: "v_portfolio_ghg_exposure"
+    description: "Calculates the weighted GHG exposure across the CIB portfolio for regulatory reporting (Scope 1/2)."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+        d.DealID,
+        d.Amount,
+        e.GHG_Emissions_Scope1,
+        e.GHG_Emissions_Scope2,
+        (d.Amount * e.GHG_Emissions_Scope1) AS WeightedGHGExposure 
+      FROM ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.financing_deals d
+      JOIN ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.e_metrics e ON d.DealID = e.DealID
+      WHERE e.GHG_Emissions_Scope1 IS NOT NULL
     
     columns:
       - name: "DealID"
         type: "varchar"
-        description: "Identifier for the financing transaction."
+        description: "Unique identifier for the financing transaction."
       - name: "Amount"
         type: "double"
-        description: "Total size of the financing deal, used for exposure calculation."
-      - name: "CompanyName"
-        type: "varchar"
-        description: "Name of the financed client entity."
-      - name: "Industry"
-        type: "varchar"
-        description: "Industry of the client entity."
-      - name: "LatestESGScore"
+        description: "The total size of the financing deal."
+      - name: "GHG_Emissions_Scope1"
         type: "double"
-        description: "Client's most recent overall ESG rating (0-100)."
+        description: "Client's direct GHG emissions (Scope 1)."
+      - name: "WeightedGHGExposure"
+        type: "double"
+        description: "Calculated risk metric: Deal Amount multiplied by Scope 1 Emissions."
 
-
-  # --- Layer 2: Granular Social and Governance Metrics (Deep Dive) ---
-views:
-  - name: "v_client_social_governance_detail"
-    description: "Detailed, unaggregated view of social and governance metrics for due diligence and internal reporting."
+  # 3. Social Metrics Detail (New View - S-Pillar Deep Dive)
+  - name: "v_social_metrics_detail"
+    description: "Detailed social metrics including turnover and diversity for compliance and HR reporting."
     security_mode: "INVOKER" 
     
     query: |
@@ -72,13 +94,9 @@ views:
           c.CompanyName,
           s.DiversityScore,
           s.EmployeeTurnover,
-          g.BoardDiversityPct,
-          g.CEO_PayRatio,
-          g.AuditCommitteeIndependence
+          s.SafetyIncidents
       FROM ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.client_entities c
-      LEFT JOIN ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.s_metrics s ON c.ClientID = s.ClientID
-      LEFT JOIN ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.g_metrics g ON c.ClientID = g.ClientID
-      WHERE s.DiversityScore IS NOT NULL -- Focus on entities with reported social data
+      JOIN ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.s_metrics s ON c.ClientID = s.ClientID
     
     columns:
       - name: "ClientID"
@@ -90,18 +108,44 @@ views:
       - name: "EmployeeTurnover"
         type: "double"
         description: "Annual rate of employee turnover (ratio)."
+      - name: "SafetyIncidents"
+        type: "integer"
+        description: "Total reported employee safety incidents in the latest period."
+
+
+  # 4. Governance Detail (New View - G-Pillar Deep Dive)
+  - name: "v_governance_detail"
+    description: "Granular governance metrics focused on board structure and executive compensation ratios."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+          c.ClientID,
+          c.CompanyName,
+          g.BoardDiversityPct,
+          g.CEO_PayRatio,
+          g.AuditCommitteeIndependence
+      FROM ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.client_entities c
+      JOIN ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.g_metrics g ON c.ClientID = g.ClientID
+    
+    columns:
+      - name: "ClientID"
+        type: "varchar"
+        description: "Unique identifier for the client."
       - name: "BoardDiversityPct"
         type: "double"
         description: "Percentage of board members identifying as diverse."
       - name: "CEO_PayRatio"
         type: "integer"
         description: "Ratio of CEO compensation to median employee compensation."
+      - name: "AuditCommitteeIndependence"
+        type: "double"
+        description: "Score representing the independence of the audit committee (1.0 = fully independent)."
 
 
-  # --- Layer 3: Environmental Metrics and Financed Emissions ---
-views:
-  - name: "v_financed_emissions_metrics"
-    description: "Calculates the final environmental exposure for regulatory reporting (PCAF/financed emissions)."
+  # 5. Green Finance Deals (New View - Transaction Focus)
+  - name: "v_green_finance_transactions"
+    description: "Filters all deals to show only those explicitly marked for green/sustainable use of proceeds."
     security_mode: "INVOKER" 
     
     query: |
@@ -109,31 +153,21 @@ views:
           d.DealID,
           d.DealDate,
           d.Amount,
-          d.UseOfProceeds,
-          e.GHG_Emissions_Scope1,
-          e.EnergyMix_Renewable,
-          -- Final calculated exposure metric
-          (d.Amount * e.GHG_Emissions_Scope1) AS WeightedGHGExposure 
+          d.Sector,
+          d.UseOfProceeds
       FROM ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.financing_deals d
-      JOIN ${ESG_RAW_CATALOG}.${ESG_RAW_SCHEMA}.e_metrics e ON d.DealID = e.DealID
-      WHERE e.GHG_Emissions_Scope1 IS NOT NULL
-      
+      WHERE d.UseOfProceeds IN ('Renewable Energy Project', 'Social Housing')
+    
     columns:
       - name: "DealID"
         type: "varchar"
         description: "Financing transaction ID."
+      - name: "DealDate"
+        type: "date"
+        description: "Date the deal was closed."
       - name: "Amount"
         type: "double"
-        description: "Total size of the deal."
+        description: "Total size of the financing deal."
       - name: "UseOfProceeds"
         type: "varchar"
-        description: "Stated purpose of the deal (e.g., Renewable Energy Project)."
-      - name: "GHG_Emissions_Scope1"
-        type: "double"
-        description: "Client's direct greenhouse gas emissions (metric tons CO2e)."
-      - name: "EnergyMix_Renewable"
-        type: "double"
-        description: "Percentage of client's energy consumption sourced from renewable energy."
-      - name: "WeightedGHGExposure"
-        type: "double"
-        description: "The calculated financed emissions risk metric."
+        description: "The stated purpose of the funds (confirms 'green' alignment)."

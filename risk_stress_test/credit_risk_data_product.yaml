@@ -1,0 +1,82 @@
+# --- CREDIT RISK SEMANTIC LAYER DEFINITION ---
+name: "Credit Risk Portfolio Analytics"
+description: "Views providing portfolio concentrations, default probability (PD), and data tailored for credit model inputs."
+summary: "Credit Quality and Stress Test Input Views"
+
+# DATA PRODUCT DESTINATION (Pulls from your .env variables)
+domain: "Risk & Stress Test"
+catalog: ${RISK_DP_CATALOG}
+schema: ${RISK_CREDIT_DP_SCHEMA}
+
+owners:
+  - name: "Credit Risk Analytics"
+    email: "credit-risk@bank.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Loan Portfolio Summary (Concentration and Quality)
+  - name: "v_loan_portfolio_summary"
+    description: "Aggregates loan portfolio quality by Loan Type and Risk Grade."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+          LoanType,
+          RiskGrade,
+          COUNT(LoanID) AS NumberOfLoans,
+          SUM(PrincipalAmount) AS TotalPrincipalExposure,
+          AVG(LTV_Ratio) AS AvgLTV,
+          AVG(PD_Score) AS AvgPD_Score,
+          COUNT(CASE WHEN IsDefaulted = TRUE THEN 1 END) AS DefaultCount
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.loan_portfolios
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+    
+    columns:
+      - name: "LoanType"
+        type: "varchar"
+        description: "Type of credit product (e.g., Mortgage, Corporate Loan)."
+      - name: "RiskGrade"
+        type: "varchar"
+        description: "Internal credit rating (A-E)."
+      - name: "TotalPrincipalExposure"
+        type: "double"
+        description: "Sum of principal across all loans in this segment."
+      - name: "AvgPD_Score"
+        type: "double"
+        description: "Average Probability of Default score."
+      - name: "DefaultCount"
+        type: "bigint"
+        description: "Number of loans in this segment that are currently defaulted."
+
+  # 2. Stress Test Scenario Inputs
+  - name: "v_stress_scenario_inputs"
+    description: "Provides pre-defined economic shocks (e.g., interest rate shifts, equity decline) for use in risk model projections."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+          ScenarioID,
+          ScenarioName,
+          ScenarioDescription,
+          Impact_Equity AS EquityShock_Pct,
+          Impact_IR_Shift_bps AS InterestRateShock_bps
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.stress_scenarios
+      WHERE DateCreated = current_date -- Focus on the latest scenario definitions
+    
+    columns:
+      - name: "ScenarioID"
+        type: "varchar"
+        description: "Unique identifier for the stress scenario."
+      - name: "ScenarioName"
+        type: "varchar"
+        description: "Descriptive name of the economic shock."
+      - name: "EquityShock_Pct"
+        type: "double"
+        description: "The prescribed drop in the equity market for this scenario (e.g., -0.30)."
+      - name: "InterestRateShock_bps"
+        type: "integer"
+        description: "The prescribed shift in interest rates in basis points (e.g., 100 bps)."

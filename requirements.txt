@@ -7,6 +7,4 @@ Faker
 SQLAlchemy
 sqlalchemy-trino
 pystarburst
-python-dotenv
-typing
-concurrent
+-e .

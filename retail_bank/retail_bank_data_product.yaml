@@ -1,0 +1,196 @@
+# --- RETAIL BANKING SEMANTIC LAYER DEFINITION (EXPANDED SCOPE) ---
+name: "Retail Banking Customer 360 & Lending"
+description: "A unified view of customer accounts, risk scores, product holdings, credit exposure, and engagement metrics."
+summary: "Five-Layer Semantic Access for Retail Banking Analytics"
+
+# DATA PRODUCT DESTINATION (Pulls from your .env variables)
+domain: "Retail Banking"
+catalog: ${RETAIL_DP_CATALOG}
+schema: ${RETAIL_DP_SCHEMA}
+
+owners:
+  - name: "Retail Analytics Team"
+    email: "retail-analytics@bank.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS (5 Views Total)
+# ==============================================================================
+views:
+  
+  # 1. (Original) Customer 360 & Product Holdings
+  - name: "v_customer_360_product_mix"
+    description: "Combines core customer data with active account details and age."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH AccountSummary AS (
+          SELECT
+              AccountID, CustomerID, AccountType, DateOpened, Balance,
+              -- FIX: Use DATE_DIFF for correct type conversion
+              DATE_DIFF('day', DateOpened, current_date) as AccountAgeDays
+          FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.accounts 
+      )
+      SELECT 
+          c.CustomerID, c.FirstName, c.LastName, c.City, c.Region,
+          a.AccountID, a.AccountType, a.Balance, a.AccountAgeDays
+      FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.customers c
+      JOIN AccountSummary a ON c.CustomerID = a.CustomerID
+      WHERE a.Balance > 0
+    
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Unique identifier for the client."
+      - name: "LastName"
+        type: "varchar"
+        description: "Customer's last name."
+      - name: "Region"
+        type: "varchar"
+        description: "Geographic region of the customer."
+      - name: "AccountType"
+        type: "varchar"
+        description: "Type of account (e.g., Checking, Savings, Credit)."
+      - name: "Balance"
+        type: "double"
+        description: "Current balance of the account."
+      - name: "AccountAgeDays"
+        type: "bigint"
+        description: "How many days the account has been open."
+
+  # 2. (Original) Transaction Activity and Risk Score
+  - name: "v_customer_risk_activity"
+    description: "Calculates a simple risk score based on recent activity (e.g., transaction velocity and negative events)."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH RecentActivity AS (
+          SELECT 
+              AccountID, 
+              COUNT(CASE WHEN TransactionType = 'Withdrawal' THEN 1 END) AS RecentWithdrawals,
+              COUNT(CASE WHEN TransactionType = 'Fraud' THEN 1 END) AS FraudCount
+          FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.transactions 
+          WHERE TransactionDate >= (current_date - INTERVAL '30' DAY)
+          GROUP BY 1
+      )
+      SELECT 
+          a.CustomerID, a.AccountID, ra.RecentWithdrawals, ra.FraudCount,
+          -- FIX: Use DATE_DIFF for the division to calculate account age in days
+          CAST( (COALESCE(ra.FraudCount, 0) * 10) + (1000.0 / CAST(DATE_DIFF('day', a.DateOpened, current_date) AS DOUBLE)) AS DOUBLE ) AS CalculatedRiskScore
+      FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.accounts a
+      LEFT JOIN RecentActivity ra ON a.AccountID = ra.AccountID
+    
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Unique identifier for the client."
+      - name: "FraudCount"
+        type: "integer"
+        description: "Count of transactions flagged as potential fraud in the last 30 days."
+      - name: "CalculatedRiskScore"
+        type: "double"
+        description: "Calculated risk metric (higher is riskier)."
+  
+  # 3. (NEW) Credit Risk Exposure
+  - name: "v_credit_risk_exposure"
+    description: "Aggregated view of a customer's total outstanding principal, highest interest rate, and default status across all loans."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+          l.CustomerID,
+          COUNT(l.LoanID) AS TotalLoans,
+          SUM(CASE WHEN l.LoanStatus = 'Active' THEN l.Principal ELSE 0 END) AS TotalOutstandingPrincipal,
+          MAX(l.InterestRate) AS MaxInterestRate,
+          COUNT(CASE WHEN l.LoanStatus = 'Default' THEN 1 END) AS DefaultedLoansCount
+      FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.loans l
+      WHERE l.LoanStatus IN ('Active', 'Default')
+      GROUP BY 1
+    
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Unique identifier for the client."
+      - name: "TotalLoans"
+        type: "bigint"
+        description: "Total number of active or defaulted loans."
+      - name: "TotalOutstandingPrincipal"
+        type: "double"
+        description: "Total principal amount currently owed by the customer."
+      - name: "MaxInterestRate"
+        type: "double"
+        description: "The highest interest rate held across all current loans."
+      - name: "DefaultedLoansCount"
+        type: "bigint"
+        description: "Number of loans currently in default status."
+
+  # 4. (NEW) Customer Engagement Metrics
+  - name: "v_customer_engagement_metrics"
+    description: "Calculated metrics for marketing analysis, including response rate and recency of engagement."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH CustomerCampaigns AS (
+          SELECT 
+              CustomerID, 
+              COUNT(CampaignID) AS TotalCampaigns,
+              COUNT(CASE WHEN Response = 'Responded' THEN 1 END) AS TotalResponses,
+              MAX(DateSent) AS LastEngagedDate
+          FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.marketing_campaigns mc
+          GROUP BY 1
+      )
+      SELECT
+          cc.CustomerID,
+          cc.TotalCampaigns,
+          cc.TotalResponses,
+          CAST(cc.TotalResponses * 100.0 / cc.TotalCampaigns AS DOUBLE) AS ResponseRatePct,
+          cc.LastEngagedDate,
+          -- FIX: Use DATE_DIFF for correct type conversion
+          DATE_DIFF('day', cc.LastEngagedDate, current_date) AS RecencyDays
+      FROM CustomerCampaigns cc
+      WHERE cc.TotalCampaigns > 0
+    
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Unique identifier for the client."
+      - name: "TotalCampaigns"
+        type: "bigint"
+        description: "Total number of marketing campaigns the customer was targeted with."
+      - name: "ResponseRatePct"
+        type: "double"
+        description: "Percentage of campaigns the customer responded to."
+      - name: "RecencyDays"
+        type: "bigint"
+        description: "Number of days since the customer was last targeted by a campaign."
+
+  # 5. (Original) Branch Performance & Foot Traffic
+  - name: "v_branch_performance"
+    description: "Aggregated view of transaction volume and customer density by branch location for performance analysis."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+          c.BranchID, c.BranchName, c.Region,
+          COUNT(DISTINCT t.AccountID) AS ActiveAccounts,
+          SUM(t.Amount) AS TotalTransactionVolume,
+          AVG(t.Amount) AS AvgTransactionValue
+      FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.branches c
+      JOIN ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.transactions t 
+          ON c.BranchID = t.BranchID
+      WHERE c.BranchID IS NOT NULL
+      GROUP BY 1, 2, 3
+      HAVING COUNT(DISTINCT t.AccountID) > 50
+      
+    columns:
+      - name: "BranchID"
+        type: "varchar"
+        description: "Unique identifier for the bank branch."
+      - name: "Region"
+        type: "varchar"
+        description: "Geographic region."
+      - name: "ActiveAccounts"
+        type: "bigint"
+        description: "Number of unique accounts with activity at this branch."
+      - name: "TotalTransactionVolume"
+        type: "double"
+        description: "Sum of all transaction amounts processed by the branch."

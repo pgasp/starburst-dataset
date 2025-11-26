@@ -1,0 +1,84 @@
+# --- MARKET RISK SEMANTIC LAYER DEFINITION ---
+name: "Market Risk Trading Sensitivities"
+description: "High-level risk metrics (VaR, Greeks) and position data for daily trading risk monitoring."
+summary: "Market Risk Exposure and Sensitivity Views"
+
+# DATA PRODUCT DESTINATION (Pulls from your .env variables)
+domain: "Risk & Stress Test"
+catalog: ${RISK_DP_CATALOG}
+schema: ${RISK_MARKET_DP_SCHEMA}
+
+owners:
+  - name: "Market Risk Quants"
+    email: "market-risk@bank.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Daily Value at Risk (VaR)
+  - name: "v_daily_value_at_risk"
+    description: "Calculated 99% 1-day Historical Value-at-Risk by Asset Class."
+    security_mode: "INVOKER" 
+    
+    query: |
+      -- Simplified Historical VaR Proxy: Total Notional * Max Volatility * Factor (2.33 for 99%)
+      WITH CurrentVolatility AS (
+          SELECT
+              t.AssetClass,
+              MAX(md.Volatility) AS MaxDailyVol
+          FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.trading_positions t
+          JOIN ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.market_data md 
+              ON t.AssetClass = md.RiskFactor -- Simplification
+          GROUP BY 1
+      )
+      SELECT 
+          t.AssetClass,
+          SUM(ABS(t.NotionalValue)) AS TotalNotionalExposure,
+          SUM(ABS(t.NotionalValue)) * cv.MaxDailyVol * 2.33 AS CalculatedVaR_99pct
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.trading_positions t
+      JOIN CurrentVolatility cv ON t.AssetClass = cv.AssetClass
+      -- FIX: Explicitly group by t.AssetClass and the joined cv.MaxDailyVol
+      GROUP BY t.AssetClass, cv.MaxDailyVol
+    
+    columns:
+      - name: "AssetClass"
+        type: "varchar"
+        description: "Asset class (e.g., Equity, FX)."
+      - name: "TotalNotionalExposure"
+        type: "double"
+        description: "Total absolute value of positions in the asset class."
+      - name: "CalculatedVaR_99pct"
+        type: "double"
+        description: "Simplified proxy for 99% Value-at-Risk."
+
+  # 2. Equity Position Greeks (Sensitivity)
+  - name: "v_equity_position_greeks"
+    description: "Detailed position sensitivities (Delta, Vega) for option-related trading positions."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+          PositionID,
+          InstrumentID,
+          NotionalValue,
+          Delta,
+          Vega,
+          (Delta * NotionalValue) AS TotalDeltaExposure
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.trading_positions
+      WHERE AssetClass = 'Equity' AND (Delta IS NOT NULL OR Vega IS NOT NULL)
+    
+    columns:
+      - name: "PositionID"
+        type: "varchar"
+        description: "Unique trading position identifier."
+      - name: "InstrumentID"
+        type: "varchar"
+        description: "Stock ticker or option contract ID."
+      - name: "Delta"
+        type: "double"
+        description: "Sensitivity to a change in the underlying price."
+      - name: "TotalDeltaExposure"
+        type: "double"
+        description: "Total risk exposure from Delta."
