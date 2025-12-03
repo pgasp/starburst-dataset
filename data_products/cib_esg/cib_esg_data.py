@@ -131,18 +131,18 @@ if __name__ == "__main__":
     
     try:
         engine = create_engine(engine_string)
-        deploy_dataproduct_file("cib_esg_dataproduct.yaml")
-        # # 1. SETUP SCHEMA: Use externalized utility function
-        # if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+        
+        # 1. SETUP SCHEMA: Use externalized utility function
+        if setup_schema(engine, config['catalog'], config['schema'], config['location']):
             
-        #     # 2. GENERATE DATA
-        #     data_tables = generate_esg_data()
+            # 2. GENERATE DATA
+            data_tables = generate_esg_data()
             
-        #     # 3. UPLOAD DATA: Use externalized utility function for parallel upload
-        #     upload_to_starburst_parallel(engine, config['schema'], data_tables)
-        #     # 4. DEPLOY DATAPRODUCT: Use externalized utility function  
-        #     deploy_dataproduct_file("cib_esg_dataproduct.yaml")
-        #     logging.info("ESG data pipeline executed successfully.")
+            # 3. UPLOAD DATA: Use externalized utility function for parallel upload
+            upload_to_starburst_parallel(engine, config['schema'], data_tables)
+            # 4. DEPLOY DATAPRODUCT: Use externalized utility function  
+            deploy_dataproduct_file("cib_esg_dataproduct.yaml")
+            logging.info("ESG data pipeline executed successfully.")
         
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")
