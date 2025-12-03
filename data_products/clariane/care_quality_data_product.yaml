@@ -1,0 +1,95 @@
+# clariane/care_quality_data_product.yaml
+
+# --- CARE QUALITY & OUTCOMES DATA PRODUCT ---
+name: "Clariane Care Quality & Resident Outcomes"
+description: "Semantic layer for monitoring clinical quality indicators, resident vulnerability, and critical incident rates by facility and activity type."
+summary: "Views for Clinical Quality and Vulnerability Management"
+
+# DATA PRODUCT DESTINATION (Schema 1: Quality)
+domain: "Social & Health Care"
+catalog: ${CLARIANE_QUALITY_DP_CATALOG}
+schema: ${CLARIANE_QUALITY_DP_SCHEMA}
+
+owners:
+  - name: "Medical Expertise Team"
+    email: "medical@clariane.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Critical Incident Rate by Facility (Quality of Care)
+  - name: "v_incident_rate_facility"
+    description: "Calculates the rate of critical incidents (e.g., falls) per 1000 resident days for regulatory reporting."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH ResidentDays AS (
+          SELECT
+              FacilityID,
+              COUNT(ResidentID) AS TotalResidents,
+              CAST(COUNT(ResidentID) * 60 AS BIGINT) AS TotalResidentDays 
+          FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.residents
+          GROUP BY 1
+      ),
+      IncidentCounts AS (
+          SELECT
+              r.FacilityID,
+              COUNT(ce.EventID) AS IncidentCount
+          FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.care_events ce
+          JOIN ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.residents r ON ce.ResidentID = r.ResidentID
+          WHERE ce.IsCriticalIncident = TRUE
+          GROUP BY 1
+      )
+      SELECT
+          f.FacilityName,
+          f.ActivityType,
+          ic.IncidentCount,
+          rd.TotalResidentDays,
+          (CAST(ic.IncidentCount AS DOUBLE) / rd.TotalResidentDays) * 1000 AS IncidentRatePer1000Days
+      FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.facilities f
+      JOIN ResidentDays rd ON f.FacilityID = rd.FacilityID
+      LEFT JOIN IncidentCounts ic ON f.FacilityID = ic.FacilityID
+      WHERE rd.TotalResidentDays > 0
+      
+    columns:
+      - name: "FacilityName"
+        type: "varchar"
+        description: "Name of the care facility."
+      - name: "ActivityType"
+        type: "varchar"
+        description: "Clariane's area of activity (Long-Term, Specialty, Community)."
+      - name: "IncidentRatePer1000Days"
+        type: "double"
+        description: "Rate of critical incidents per 1000 resident days."
+
+  # 2. Resident Vulnerability Mix (Vulnerability Management)
+  - name: "v_vulnerability_mix"
+    description: "Tracks the distribution of resident vulnerability levels by facility and country to inform resource allocation."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          f.Country,
+          f.ActivityType,
+          r.VulnerabilityLevel,
+          COUNT(r.ResidentID) AS ResidentCount
+      FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.residents r
+      JOIN ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.facilities f ON r.FacilityID = f.FacilityID
+      GROUP BY 1, 2, 3
+      ORDER BY 1, 4 DESC
+      
+    columns:
+      - name: "Country"
+        type: "varchar"
+        description: "Country where the facility is located."
+      - name: "ActivityType"
+        type: "varchar"
+        description: "Clariane's area of activity."
+      - name: "VulnerabilityLevel"
+        type: "varchar"
+        description: "Level of resident vulnerability (Low, Medium, High)."
+      - name: "ResidentCount"
+        type: "bigint"
+        description: "Number of residents in this segment."

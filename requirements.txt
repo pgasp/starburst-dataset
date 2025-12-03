@@ -7,4 +7,6 @@ Faker
 SQLAlchemy
 sqlalchemy-trino
 pystarburst
+openai
+pydantic
 -e .

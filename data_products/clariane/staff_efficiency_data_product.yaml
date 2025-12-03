@@ -1,0 +1,112 @@
+# clariane/staff_efficiency_data_product.yaml
+
+# --- STAFFING & EFFICIENCY DATA PRODUCT ---
+name: "Clariane HR & Operational Efficiency"
+description: "Semantic layer for tracking key HR metrics including staff-to-resident ratios, training compliance, and labor costs."
+summary: "Views for Staffing Ratios and Training Compliance"
+
+# DATA PRODUCT DESTINATION (Schema 2: HR/Ops)
+domain: "Social & Health Care"
+catalog: ${CLARIANE_EFFICIENCY_DP_CATALOG}
+schema: ${CLARIANE_EFFICIENCY_DP_SCHEMA}
+
+owners:
+  - name: "Human Resources Management"
+    email: "hr@clariane.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Staff-to-Resident Ratio by Role and Facility (Staffing Efficiency)
+  - name: "v_staff_to_resident_ratio"
+    description: "Calculates the essential staff-to-resident ratio to assess operational staffing levels against capacity."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH FacilityTotals AS (
+          SELECT
+              FacilityID,
+              COUNT(ResidentID) AS TotalResidents
+          FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.residents
+          GROUP BY 1
+      ),
+      StaffCounts AS (
+          SELECT
+              FacilityID,
+              Role,
+              COUNT(StaffID) AS TotalStaff
+          FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.staff
+          WHERE EmploymentStatus = 'Full-Time'
+          GROUP BY 1, 2
+      )
+      SELECT
+          f.FacilityName,
+          f.Capacity,
+          sc.Role,
+          sc.TotalStaff,
+          ft.TotalResidents,
+          CAST(sc.TotalStaff AS DOUBLE) / ft.TotalResidents AS StaffToResidentRatio
+      FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.facilities f
+      JOIN FacilityTotals ft ON f.FacilityID = ft.FacilityID
+      JOIN StaffCounts sc ON f.FacilityID = sc.FacilityID
+      WHERE ft.TotalResidents > 0
+      
+    columns:
+      - name: "FacilityName"
+        type: "varchar"
+        description: "Name of the care facility."
+      - name: "Role"
+        type: "varchar"
+        description: "Staff role (Nurse, Caregiver, etc.)."
+      - name: "TotalStaff"
+        type: "bigint"
+        description: "Total full-time staff in this role."
+      - name: "TotalResidents"
+        type: "bigint"
+        description: "Total residents in the facility."
+      - name: "StaffToResidentRatio"
+        type: "double"
+        description: "Ratio of Full-Time Staff to Residents (higher is better)."
+
+  # 2. Mandatory Training Compliance (Human Resources Management)
+  - name: "v_mandatory_training_compliance"
+    description: "Calculates the compliance rate for mandatory training modules across all staff."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH CompliantStaff AS (
+          SELECT DISTINCT StaffID
+          FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.training_records tr
+          WHERE tr.IsMandatory = TRUE
+      )
+      SELECT
+          s.FacilityID,
+          f.Country,
+          s.Role,
+          COUNT(s.StaffID) AS TotalStaff,
+          COUNT(cs.StaffID) AS StaffCompletedTraining,
+          CAST(COUNT(cs.StaffID) AS DOUBLE) * 100 / COUNT(s.StaffID) AS ComplianceRate_Pct
+      FROM ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.staff s
+      JOIN ${CLARIANE_RAW_CATALOG}.${CLARIANE_RAW_SCHEMA}.facilities f ON s.FacilityID = f.FacilityID
+      LEFT JOIN CompliantStaff cs ON s.StaffID = cs.StaffID
+      GROUP BY 1, 2, 3
+      ORDER BY ComplianceRate_Pct ASC
+      
+    columns:
+      - name: "FacilityID"
+        type: "varchar"
+        description: "Identifier for the facility."
+      - name: "Country"
+        type: "varchar"
+        description: "Country where the facility is located."
+      - name: "Role"
+        type: "varchar"
+        description: "Staff role."
+      - name: "TotalStaff"
+        type: "bigint"
+        description: "Total number of staff in the segment."
+      - name: "ComplianceRate_Pct"
+        type: "double"
+        description: "Percentage of staff who have completed at least one mandatory training module."

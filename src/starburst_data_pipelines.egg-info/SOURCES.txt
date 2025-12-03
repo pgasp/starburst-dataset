@@ -1,6 +1,7 @@
 setup.py
 src/shared_tools/__init__.py
 src/shared_tools/deploy.py
+src/shared_tools/env_utils.py
 src/shared_tools/lakehouse_utils.py
 src/starburst_data_pipelines.egg-info/PKG-INFO
 src/starburst_data_pipelines.egg-info/SOURCES.txt

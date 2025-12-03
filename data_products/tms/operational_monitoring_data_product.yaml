@@ -1,0 +1,84 @@
+# tms/operational_monitoring_data_product.yaml
+
+# --- OPERATIONAL MONITORING DATA PRODUCT ---
+name: "TMS Operational Monitoring"
+description: "Semantic layer for real-time tracking, ETA variance, and asset performance monitoring."
+summary: "Views for Real-Time Fleet and Trip Performance"
+
+# DATA PRODUCT DESTINATION (Schema 1: Operational)
+domain: "Transportation Management"
+catalog: ${TMS_OPERATIONAL_DP_CATALOG}
+schema: ${TMS_OPERATIONAL_DP_SCHEMA}
+
+owners:
+  - name: "Dispatch & Operations"
+    email: "dispatch@tms.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Calculate ETA Variance by Trip
+  - name: "v_eta_variance"
+    description: "Calculates the difference between Planned and Actual Delivery Time for completed or delayed trips."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          TripID,
+          PlannedDeliveryTime,
+          ActualDeliveryTime,
+          DATE_DIFF('minute', PlannedDeliveryTime, ActualDeliveryTime) AS Variance_min,
+          CASE
+              WHEN DATE_DIFF('minute', PlannedDeliveryTime, ActualDeliveryTime) <= 0 THEN 'On-Time'
+              WHEN DATE_DIFF('minute', PlannedDeliveryTime, ActualDeliveryTime) <= 60 THEN 'Slight Delay'
+              ELSE 'Significant Delay'
+          END AS PerformanceBucket
+      FROM ${TMS_RAW_CATALOG}.${TMS_RAW_SCHEMA}.trips
+      WHERE TripStatus IN ('Completed', 'Delayed') AND ActualDeliveryTime IS NOT NULL
+      ORDER BY Variance_min DESC
+      
+    columns:
+      - name: "TripID"
+        type: "varchar"
+        description: "Unique trip identifier."
+      - name: "PlannedDeliveryTime"
+        type: "timestamp"
+        description: "Scheduled delivery timestamp."
+      - name: "ActualDeliveryTime"
+        type: "timestamp"
+        description: "Actual arrival timestamp."
+      - name: "Variance_min"
+        type: "bigint"
+        description: "Difference between actual and planned delivery time in minutes."
+      - name: "PerformanceBucket"
+        type: "varchar"
+        description: "Categorical performance status."
+
+  # 2. Monitor Fuel Efficiency by Vehicle Type
+  - name: "v_fuel_efficiency_metrics"
+    description: "Aggregates fuel consumption rate (kilometers per liter) by vehicle type."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          v.VehicleType,
+          COUNT(DISTINCT t.TripID) AS TotalTrips,
+          AVG(v.AvgFuelConsumption_kml) AS AvgObservedFuelEfficiency_kml
+      FROM ${TMS_RAW_CATALOG}.${TMS_RAW_SCHEMA}.trips t
+      JOIN ${TMS_RAW_CATALOG}.${TMS_RAW_SCHEMA}.vehicles v ON t.VehicleID = v.VehicleID
+      WHERE t.TripStatus = 'Completed'
+      GROUP BY 1
+      ORDER BY 3 DESC
+      
+    columns:
+      - name: "VehicleType"
+        type: "varchar"
+        description: "Type of asset (Semi-Truck, Box-Truck, etc.)."
+      - name: "TotalTrips"
+        type: "bigint"
+        description: "Number of trips completed by this vehicle type."
+      - name: "AvgObservedFuelEfficiency_kml"
+        type: "double"
+        description: "Average fuel efficiency observed during trips (kilometers per liter)."
