@@ -4,11 +4,17 @@ import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed # CHANGED TO ProcessPoolExecutor
 from typing import Dict, Any, Union
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype, is_string_dtype, is_bool_dtype
+from pystarburst import Session 
+from trino.auth import BasicAuthentication 
 
-# --- Helper 1: Robust Type Mapping (Kept for consistency/future use) ---
+# --- Configuration Constant for Chunking ---
+BATCH_SIZE_ROWS = 5000 
+
+# --- Utility 1 & Helper 1 (Unchanged) ---
+
 def map_dtype_to_trino(dtype) -> str:
     """Maps DType objects to Trino/Starburst SQL types using Pandas API checks."""
     if is_datetime64_any_dtype(dtype):
@@ -28,7 +34,6 @@ def map_dtype_to_trino(dtype) -> str:
         return 'DOUBLE' 
     return 'VARCHAR'
 
-# --- Utility 1: Schema Setup ---
 def setup_schema(engine: Engine, catalog: str, schema: str, location: str) -> bool:
     """Drops and recreates the target schema in Starburst/Trino."""
     schema_full_name = f'"{catalog}"."{schema}"'
@@ -38,7 +43,6 @@ def setup_schema(engine: Engine, catalog: str, schema: str, location: str) -> bo
         print(f"\n--- Setting up schema: {schema_full_name} ---")
         with engine.connect() as conn:
             conn.execute(drop_sql)
-            print(f"  > Schema {schema_full_name} dropped if exists.")
             conn.execute(create_sql)
             conn.commit()
             print(f"  > Schema {schema_full_name} created with location '{location}'.")
@@ -46,43 +50,43 @@ def setup_schema(engine: Engine, catalog: str, schema: str, location: str) -> bo
     except Exception as e:
         print(f"❌ Schema setup failed: {e}"); return False
 
-# --- Utility 2: Single Table Upload Helper (df.to_sql with method="multi") ---
-def upload_single_table_batched(table_name: str, df: pd.DataFrame, engine: Engine, schema: str, batch_size: int) -> Dict[str, Union[str, int]]:
+# --- Utility 2: Single Table Upload Helper (CORE PYSTARBURST LOGIC) ---
+def upload_single_table_pystarburst(client: Session, table_name: str, df: pd.DataFrame, schema: str) -> Dict[str, Union[str, int]]:
     """
-    Helper function to upload a single DataFrame using the df.to_sql method with chunksize 
-    and method="multi".
+    Helper function to upload a single Pandas DataFrame using batched PyStarburst calls,
+    with explicit datetime conversion to avoid type inference errors.
     """
     total_rows = len(df)
-    
+    df_clean = df.copy() 
+
+    # FIX: Explicitly convert datetime columns to string before list conversion
+    for col in df_clean.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns:
+        df_clean[col] = df_clean[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+
     try:
-        print(f"  [THREAD: {table_name}] Starting df.to_sql batch upload (Chunk: {batch_size}, Rows: {total_rows})...")
+        print(f"  [PROCESS: {table_name}] Starting batched pystarburst upload (Rows: {total_rows})...")
         
-        # 1. CRITICAL STEP: Type cleanup
-        # This converts problematic Pandas Extension Types to standard NumPy types.
-        df_cleaned = df.convert_dtypes()
+        n_chunks = (total_rows + BATCH_SIZE_ROWS - 1) // BATCH_SIZE_ROWS
         
-        for col in df_cleaned.columns:
-            dtype_name = str(df_cleaned[col].dtype)
+        for i in range(n_chunks):
+            start_idx = i * BATCH_SIZE_ROWS
+            end_idx = min((i + 1) * BATCH_SIZE_ROWS, total_rows)
+            chunk_df = df_clean.iloc[start_idx:end_idx]
             
-            # Convert nullable numerics to np.float64 (standard NumPy float supports NaN/NULL)
-            if 'Int64Dtype' in dtype_name or 'Float64Dtype' in dtype_name:
-                df_cleaned[col] = df_cleaned[col].astype(np.float64) 
-            # Convert nullable StringDtype to standard str
-            elif 'StringDtype' in dtype_name:
-                df_cleaned[col] = df_cleaned[col].astype(str)
-        
-        # 2. Optimized df.to_sql call
-        df_cleaned.to_sql(
-            name=table_name,
-            con=engine,
-            schema=schema,
-            if_exists="replace", # Ensures a fresh, clean table structure
-            index=False,
-            chunksize=batch_size, # Splits the DataFrame into memory-safe batches
-            method="multi"        # Optimizes INSERT statements for bulk loading
-        )
-        
-        print(f"  [THREAD: {table_name}] ✅ Successfully uploaded {total_rows} rows via df.to_sql batching.")
+            mode = 'overwrite' if i == 0 else 'append'
+            
+            # 1. Convert Pandas DF chunk to PyStarburst DF (PS DF)
+            ps_df = client.create_dataframe(chunk_df.values.tolist(), schema=chunk_df.columns.tolist())
+            
+            # 2. Write the PS DF chunk to the target table
+            ps_df.write.save_as_table(
+                f'{schema}.{table_name}',
+                mode=mode,
+                table_properties={'format': 'parquet'} 
+            )
+            print(f"  [PROCESS: {table_name}] Chunk {i+1}/{n_chunks} uploaded successfully ({len(chunk_df)} rows).")
+
+        print(f"  [PROCESS: {table_name}] ✅ Successfully uploaded {total_rows} rows via batched pystarburst.")
         
         return {
             "table": table_name,
@@ -90,26 +94,76 @@ def upload_single_table_batched(table_name: str, df: pd.DataFrame, engine: Engin
             "rows": total_rows
         }
     except Exception as e:
-        print(f"  [THREAD: {table_name}] ❌ Upload failed for {table_name}: {e}")
+        print(f"  [PROCESS: {table_name}] ❌ Upload failed for {table_name}: {e}")
         return {
             "table": table_name,
             "status": "FAILED",
             "error": str(e)
         }
 
-# --- Utility 3: Parallel Upload Manager ---
-def upload_to_starburst_parallel(engine: Engine, schema: str, dataframes_dict: Dict[str, pd.DataFrame], max_workers: int = 6, batch_size: int = 1000):
-    """Manages the parallel upload of all DataFrames."""
+# --- Utility 3: Multi-Process Wrapper (NEW) ---
+def _upload_single_table_wrapper(conn_params: Dict[str, Union[str, int]], table_name: str, df: pd.DataFrame, schema: str):
+    """
+    Wrapper function that runs in a separate process, initializes its own Session,
+    and calls the main upload logic.
+    """
+    try:
+        # 1. Initialize a NEW PyStarburst Session for this process (Thread-safe)
+        sb_client = Session.builder.configs(conn_params).create()
+        
+        # 2. Execute the single-table upload
+        result = upload_single_table_pystarburst(sb_client, table_name, df, schema)
+        
+        # 3. Close the Session
+        sb_client.close()
+        return result
+    except Exception as e:
+        # Handle exceptions during connection setup
+        return {
+            "table": table_name,
+            "status": "FAILED",
+            "error": f"Process setup failed: {e}"
+        }
+
+# --- Utility 4: Parallel Upload Manager (RE-ENABLED PARALLELISM) ---
+def upload_to_starburst_parallel(engine: Engine, schema: str, dataframes_dict: Dict[str, pd.DataFrame], max_workers: int = 6):
+    """
+    Manages the parallel upload of all DataFrames using multi-processing (ProcessPoolExecutor).
+    """
     results = []
     num_tables = len(dataframes_dict)
     workers = min(max_workers, num_tables)
     
-    print(f"\n🚀 Starting parallel upload of {num_tables} tables with {workers} workers.")
+    # 1. Extract *serializable* connection details from the SQLAlchemy Engine URL
+    try:
+        url_parts = engine.url
+        user, password = url_parts.username, url_parts.password
+        host, port = url_parts.host, url_parts.port
+        catalog = url_parts.database
+        
+        if not (host and user and password):
+             raise ValueError("Missing connection details in SQLAlchemy Engine URL.")
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Connection parameters dictionary (passed to each process)
+        conn_params = {
+            "host": host, 
+            "port": port, 
+            "user": user, 
+            "catalog": catalog,
+            "http_scheme": "https",
+            # Pass the authentication object to be reconstructed in the child process
+            "auth": BasicAuthentication(user, password) 
+        }
+    except Exception as e:
+        print(f"❌ Failed to extract connection details: {e}")
+        return [{"table": "Client Setup", "status": "FAILED", "error": f"Client initialization failed: {e}"}]
+
+    print(f"\n🚀 Starting PARALLEL upload of {num_tables} tables with {workers} processes using pystarburst.")
+
+    # 2. Use ProcessPoolExecutor for true parallelism (thread-safe sessions)
+    with ProcessPoolExecutor(max_workers=workers) as executor:
         future_to_table = {
-            # Submits tasks for each table to run concurrently
-            executor.submit(upload_single_table_batched, table_name, df, engine, schema, batch_size): table_name
+            executor.submit(_upload_single_table_wrapper, conn_params, table_name, df, schema): table_name
             for table_name, df in dataframes_dict.items()
         }
 
