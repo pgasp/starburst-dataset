@@ -1,4 +1,4 @@
-# telecom/telecom_data.py
+# automotive/automotive_data.py
 
 import pandas as pd
 import numpy as np
@@ -9,6 +9,8 @@ from sqlalchemy import create_engine
 import os
 import sys
 import logging
+# NEW IMPORT
+import argparse
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -33,12 +35,11 @@ load_project_env(__file__)
 fake = Faker()
 
 # --- Configuration (Volume) ---
-NUM_CUSTOMERS = 20000
-NUM_SUBSCRIPTIONS = 25000 
-NUM_INVOICES = 30000
-NUM_USAGE = 60000 
-NUM_PERFORMANCE = 15000
-NUM_FAULTS = 10000 
+NUM_PARTS = 2000
+NUM_STOCK_LOCATIONS = 50
+NUM_PRODUCTION_RUNS = 1000
+NUM_ASSEMBLY_STEPS = 50000 
+NUM_SENSOR_READINGS = 150000 
 
 def get_config():
     """Loads configuration from environment variables for the RAW TARGET."""
@@ -46,141 +47,138 @@ def get_config():
         config = {
             "host": os.environ["SB_HOST"], "port": os.environ["SB_PORT"],
             "user": os.environ["SB_USER"], "password": os.environ["SB_PASSWORD"],
-            # RAW DATA TARGET (Using TELECOM_RAW variables)
-            "catalog": os.environ["TELECOM_RAW_CATALOG"], 
-            "schema": os.environ["TELECOM_RAW_SCHEMA"],
-            "location": os.environ["TELECOM_SB_SCHEMA_LOCATION"]
+            # RAW DATA TARGET (Using AUTOMOTIVE_RAW variables)
+            "catalog": os.environ["AUTOMOTIVE_RAW_CATALOG"], 
+            "schema": os.environ["AUTOMOTIVE_RAW_SCHEMA"],
+            "location": os.environ["AUTOMOTIVE_SB_SCHEMA_LOCATION"]
         }
         return config
     except KeyError as e:
-        logging.error(f"--- ERROR: Missing configuration for TELECOM: {e} ---")
-        logging.error("Please check for SB_HOST in your root .env file, and the TELECOM variables in your local telecom/.env file.")
+        logging.error(f"--- ERROR: Missing configuration for AUTOMOTIVE: {e} ---")
+        logging.error("Please check for SB_HOST in your root .env file, and the AUTOMOTIVE variables in your local automotive/.env file.")
         sys.exit(1)
 
-def generate_telecom_data():
-    logging.info("Starting Telecom (OSS/BSS) data generation...")
+def generate_automotive_data():
+    logging.info("Starting Automotive Manufacturing data generation...")
     today = datetime.now().date()
     
-    # --- 1. Customers (BSS Dimension) ---
-    segments = ['Residential', 'Business-SME', 'Business-Enterprise']
-    customers = []
-    for i in range(NUM_CUSTOMERS):
-        customers.append({
-            "CustomerID": f"TELCUST-{10000 + i}", 
-            "JoinedDate": fake.date_between(start_date='-5y', end_date='-60d'),
-            "CustomerSegment": random.choice(segments),
-            "ChurnRiskScore": round(random.uniform(0.1, 0.9), 2),
-            "City": fake.city()
+    # --- 1. Parts (Inventory Dimension) ---
+    part_types = ['Chassis', 'Engine', 'Interior', 'Electronics', 'Exterior']
+    parts = []
+    for i in range(NUM_PARTS):
+        parts.append({
+            "PartID": f"PART-{1000 + i}", 
+            "PartName": fake.word().capitalize() + " " + random.choice(['Bracket', 'Sensor', 'Module', 'Panel']),
+            "PartType": random.choice(part_types),
+            "Cost": round(random.uniform(5, 500), 2),
+            "Supplier": fake.company(),
+            "MaxStockLevel": random.randint(500, 5000)
         })
-    customers_df = pd.DataFrame(customers); customer_ids = customers_df['CustomerID'].tolist()
+    parts_df = pd.DataFrame(parts); part_ids = parts_df['PartID'].tolist()
 
-    # --- 2. Service_Subscriptions (BSS Dimension) ---
-    products = ['Mobile-Pro', 'Mobile-Basic', 'Fiber-Gold', 'Fiber-Bronze']
-    subscriptions = []
-    for i in range(NUM_SUBSCRIPTIONS):
-        cid = random.choice(customer_ids)
-        subscriptions.append({
-            "SubscriptionID": f"SUB-{200000 + i}",
-            "CustomerID": cid,
-            "ProductID": random.choice(products),
-            "MonthlyFee": round(random.uniform(20, 150), 2),
-            "ServiceStartDate": fake.date_between(start_date='-3y', end_date='-30d'),
-            "ContractStatus": random.choices(['Active', 'Suspended', 'Cancelled'], weights=[90, 5, 5], k=1)[0]
+    # --- 2. Inventory_Levels (Logistics Fact) ---
+    locations = [f"ZONE-{i}" for i in range(1, NUM_STOCK_LOCATIONS + 1)]
+    inventory_levels = []
+    for _ in range(NUM_PARTS * 2): # Two locations per part on average
+        inventory_levels.append({
+            "InventoryID": f"INV-{len(inventory_levels) + 1}",
+            "PartID": random.choice(part_ids),
+            "LocationID": random.choice(locations),
+            "CurrentStock": random.randint(0, 1500),
+            "LastUpdated": fake.date_time_between(start_date='-7d', end_date='now')
         })
-    subscriptions_df = pd.DataFrame(subscriptions); subscription_ids = subscriptions_df['SubscriptionID'].tolist()
+    inventory_levels_df = pd.DataFrame(inventory_levels)
 
-    # --- 3. Invoices (BSS Fact) ---
-    invoice_statuses = ['Paid', 'Overdue', 'Pending']
-    invoices = []
-    for i in range(NUM_INVOICES):
-        sid = random.choice(subscription_ids)
-        status = random.choices(invoice_statuses, weights=[85, 10, 5], k=1)[0]
-        invoices.append({
-            "InvoiceID": f"INV-{300000 + i}",
-            "SubscriptionID": sid,
-            "InvoiceDate": fake.date_between(start_date='-1y', end_date='-7d'),
-            "BillingCycle": random.choice(['Monthly', 'Quarterly']),
-            "AmountDue": round(random.uniform(25, 175), 2),
-            "PaymentStatus": status,
-            "DaysLate": random.randint(1, 45) if status == 'Overdue' else 0
+    # --- 3. Production_Runs (Assembly Dimension - The car being built) ---
+    models = ['SedanX', 'TruckY', 'SUVZ']
+    production_runs = []
+    for i in range(NUM_PRODUCTION_RUNS):
+        production_runs.append({
+            "RunID": f"RUN-{3000 + i}",
+            "VIN_Serial": fake.bothify(text='############'),
+            "Model": random.choice(models),
+            "StartTime": fake.date_time_between(start_date='-30d', end_date='now'),
+            "LineID": f"LINE-{random.randint(1, 5)}",
+            "TargetBuildTime_hrs": random.randint(10, 30)
         })
-    invoices_df = pd.DataFrame(invoices)
-    
-    # --- 4. Customer_Usage (OSS Fact - Links to BSS via SubscriptionID) ---
-    usage = []
-    usage_types = ['Data_MB', 'Voice_Mins', 'SMS_Count']
-    for i in range(NUM_USAGE):
-        sid = random.choice(subscription_ids)
-        usage_type = random.choice(usage_types)
-        usage.append({
-            "UsageRecordID": f"USG-{4000000 + i}",
-            "SubscriptionID": sid,
-            "UsageDate": fake.date_time_between(start_date='-30d', end_date='now'),
-            "UsageType": usage_type,
-            "UsageValue": round(random.uniform(1, 1000) * (2 if usage_type=='Data_MB' else 1), 2),
-            "CellSiteID": f"CELL-{random.randint(100, 300)}"
-        })
-    usage_df = pd.DataFrame(usage); cell_site_ids = usage_df['CellSiteID'].unique().tolist()
-    
-    # --- 5. Network_Performance (OSS Fact - Cell Site Level) ---
-    performance = []
-    for i in range(NUM_PERFORMANCE):
-        performance.append({
-            "RecordID": f"PERF-{50000 + i}",
-            "CellSiteID": random.choice(cell_site_ids),
-            "Timestamp": fake.date_time_between(start_date='-30d', end_date='now'),
-            "DownloadSpeed_Mbps": round(random.uniform(5, 100), 2),
-            "Latency_ms": round(random.uniform(10, 150), 2),
-            "PacketLoss_Pct": round(random.uniform(0, 5), 2)
-        })
-    performance_df = pd.DataFrame(performance)
-    
-    # --- 6. Fault_Records (OSS Fact) ---
-    fault_severities = ['Critical', 'Major', 'Minor']
-    fault_records = []
-    for i in range(NUM_FAULTS):
-        fault_records.append({
-            "FaultID": f"FLT-{6000 + i}",
-            "CellSiteID": random.choice(cell_site_ids),
-            "FaultTime": fake.date_time_between(start_date='-60d', end_date='now'),
-            "Severity": random.choices(fault_severities, weights=[10, 30, 60], k=1)[0],
-            "Description": fake.bs(),
-            "ResolutionTime_min": random.randint(10, 480)
-        })
-    fault_records_df = pd.DataFrame(fault_records)
+    production_runs_df = pd.DataFrame(production_runs); run_ids = production_runs_df['RunID'].tolist()
 
-    logging.info(f"Generated {len(customers_df)} customers, {len(subscriptions_df)} subscriptions, and approximately 100k records across usage, performance, and faults.")
+    # --- 4. Assembly_Steps (Efficiency Fact) ---
+    steps = ['Chassis Welding', 'Engine Install', 'Interior Trim', 'Paint Booth', 'Final Inspection']
+    assembly_steps = []
+    for i in range(NUM_ASSEMBLY_STEPS):
+        run_id = random.choice(run_ids)
+        step_name = random.choice(steps)
+        start_time = fake.date_time_between(start_date='-30d', end_date='now')
+        assembly_steps.append({
+            "StepID": f"STEP-{40000 + i}",
+            "RunID": run_id,
+            "StepName": step_name,
+            "WorkerID": f"WKR-{random.randint(100, 200)}",
+            "StartTime": start_time,
+            "EndTime": start_time + timedelta(minutes=random.randint(5, 60)),
+            "IsRework": random.choices([True, False], weights=[5, 95], k=1)[0]
+        })
+    assembly_steps_df = pd.DataFrame(assembly_steps)
+    
+    # --- 5. Quality_Sensor_Data (Quality Fact) ---
+    sensor_types = ['Vibration', 'Temperature', 'Torque']
+    quality_sensor_data = []
+    for i in range(NUM_SENSOR_READINGS):
+        run_id = random.choice(run_ids)
+        quality_sensor_data.append({
+            "ReadingID": f"SENSOR-{500000 + i}",
+            "RunID": run_id,
+            "SensorType": random.choice(sensor_types),
+            "MeasurementTime": fake.date_time_between(start_date='-30d', end_date='now'),
+            "ReadingValue": round(random.uniform(50, 150), 3),
+            "IsAnomaly": random.choices([True, False], weights=[2, 98], k=1)[0],
+            "AssemblyStep": random.choice(steps)
+        })
+    quality_sensor_data_df = pd.DataFrame(quality_sensor_data)
+
+    logging.info(f"Generated {len(parts_df)} parts, {len(production_runs_df)} runs, and {len(assembly_steps_df) + len(quality_sensor_data_df)} manufacturing records.")
     
     return {
-        "customers": customers_df, 
-        "service_subscriptions": subscriptions_df, 
-        "invoices": invoices_df,
-        "customer_usage": usage_df,
-        "network_performance": performance_df,
-        "fault_records": fault_records_df
+        "parts": parts_df, 
+        "inventory_levels": inventory_levels_df, 
+        "production_runs": production_runs_df,
+        "assembly_steps": assembly_steps_df,
+        "quality_sensor_data": quality_sensor_data_df
     }
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate Automotive Manufacturing data and deploy Data Products.")
+    parser.add_argument('--deploy-only', action='store_true', help='Skip schema setup and data ingestion, only deploy Data Products.')
+    args = parser.parse_args()
+
     config = get_config()
     engine_string = f"trino://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['catalog']}"
     
     try:
         engine = create_engine(engine_string)
         
-        # 1. SETUP SCHEMA
-        if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+        if not args.deploy_only:
+            # 1. SETUP SCHEMA
+            if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+                
+                # 2. GENERATE DATA
+                data_tables = generate_automotive_data()
+                
+                # 3. UPLOAD DATA (5 tables)
+                upload_to_starburst_parallel(engine, config['schema'], data_tables)
+            else:
+                logging.error("Schema setup failed. Cannot proceed to deploy Data Products.")
+                sys.exit(1)
+        else:
+            logging.info("Deployment only mode: Skipping schema setup and data generation/upload.")
             
-            # 2. GENERATE DATA
-            data_tables = generate_telecom_data()
+        # 4. DEPLOY DATAPRODUCTS: Scans the directory and deploys all three YAML files.
+        deploy_path = os.path.dirname(os.path.abspath(__file__))
+        scan_and_deploy(deploy_path)
             
-            # 3. UPLOAD DATA (6 tables)
-            upload_to_starburst_parallel(engine, config['schema'], data_tables)
-            
-            # 4. DEPLOY DATAPRODUCTS: Scans the directory and deploys all three YAML files.
-            scan_and_deploy("./telecom")
-            
-            logging.info("Telecom (OSS/BSS) data pipeline executed successfully.")
+        logging.info("Automotive Manufacturing data pipeline executed successfully.")
         
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")

@@ -9,6 +9,8 @@ from sqlalchemy import create_engine
 import os
 import sys
 import logging
+# NEW IMPORT
+import argparse
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -138,25 +140,37 @@ def generate_ecommerce_data():
 
 
 if __name__ == "__main__":
+    # 1. Argument Parsing (NEW)
+    parser = argparse.ArgumentParser(description="Generate E-Commerce data and deploy Data Products.")
+    parser.add_argument('--deploy-only', action='store_true', help='Skip schema setup and data ingestion, only deploy Data Products.')
+    args = parser.parse_args()
+
     config = get_config()
     engine_string = f"trino://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['catalog']}"
     
     try:
         engine = create_engine(engine_string)
         
-        # 1. SETUP SCHEMA
-        if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+        if not args.deploy_only:
+            # 1. SETUP SCHEMA
+            if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+                
+                # 2. GENERATE DATA
+                data_tables = generate_ecommerce_data()
+                
+                # 3. UPLOAD DATA
+                upload_to_starburst_parallel(engine, config['schema'], data_tables)
+            else:
+                logging.error("Schema setup failed. Cannot proceed to deploy Data Products.")
+                sys.exit(1)
+        else:
+            logging.info("Deployment only mode: Skipping schema setup and data generation/upload.")
             
-            # 2. GENERATE DATA
-            data_tables = generate_ecommerce_data()
+        # 4. DEPLOY DATAPRODUCTS: Scans the directory and deploys both YAML files.
+        deploy_path = os.path.dirname(os.path.abspath(__file__))
+        scan_and_deploy(deploy_path)
             
-            # 3. UPLOAD DATA
-            upload_to_starburst_parallel(engine, config['schema'], data_tables)
-            
-            # 4. DEPLOY DATAPRODUCTS: Scans the directory and deploys both YAML files.
-            scan_and_deploy("./e_commerce")
-            
-            logging.info("E-Commerce data pipeline executed successfully.")
+        logging.info("E-Commerce data pipeline executed successfully.")
         
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")

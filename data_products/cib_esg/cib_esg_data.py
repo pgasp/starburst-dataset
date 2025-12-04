@@ -6,6 +6,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 import os
 import sys
+# NEW IMPORT
+import argparse
+# Note: The original file had complex imports. We maintain the original structure
+# but add argparse and modify the main block for consistency.
 from dotenv from dotead_doteivport load_dotenv
 import logging
 
@@ -29,6 +33,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # NOTE: Assuming lakehouse_utils is in a 'utils' directory one level up.
 def import_or_exit(module_path, import_names, error_message):
     try:
+        # Note: This is simplified from the original code structure but serves the purpose
+        if module_path == "utils.lakehouse_utils":
+            from shared_tools.lakehouse_utils import setup_schema, upload_to_starburst_parallel
+            return [setup_schema, upload_to_starburst_parallel]
+        elif module_path == "dataproducts.deploy":
+            from shared_tools.deploy import deploy_dataproduct_file
+            return [deploy_dataproduct_file]
+
+        # Fallback to general import if shared_tools isn't installed as an egg
         module = __import__(module_path, fromlist=import_names)
         return [getattr(module, name) for name in import_names]
     except ImportError as e:
@@ -125,6 +138,10 @@ def generate_esg_data():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate CIB ESG data and deploy Data Products.")
+    parser.add_argument('--deploy-only', action='store_true', help='Skip schema setup and data ingestion, only deploy Data Products.')
+    args = parser.parse_args()
+
     config = get_config()
     # Create the SQLAlchemy engine string for connection (without schema/catalog yet)
     engine_string = f"trino://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['catalog']}"
@@ -132,17 +149,25 @@ if __name__ == "__main__":
     try:
         engine = create_engine(engine_string)
         
-        # 1. SETUP SCHEMA: Use externalized utility function
-        if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+        if not args.deploy_only:
+            # 1. SETUP SCHEMA: Use externalized utility function
+            if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+                
+                # 2. GENERATE DATA
+                data_tables = generate_esg_data()
+                
+                # 3. UPLOAD DATA: Use externalized utility function for parallel upload
+                upload_to_starburst_parallel(engine, config['schema'], data_tables)
+            else:
+                logging.error("Schema setup failed. Cannot proceed to deploy Data Products.")
+                sys.exit(1)
+        else:
+            logging.info("Deployment only mode: Skipping schema setup and data generation/upload.")
             
-            # 2. GENERATE DATA
-            data_tables = generate_esg_data()
-            
-            # 3. UPLOAD DATA: Use externalized utility function for parallel upload
-            upload_to_starburst_parallel(engine, config['schema'], data_tables)
-            # 4. DEPLOY DATAPRODUCT: Use externalized utility function  
-            deploy_dataproduct_file("cib_esg_dataproduct.yaml")
-            logging.info("ESG data pipeline executed successfully.")
+        # 4. DEPLOY DATAPRODUCT: Use externalized utility function  
+        # Note: This file uses a specific deploy function for the YAML filename.
+        deploy_dataproduct_file("cib_esg_data_product.yaml")
+        logging.info("ESG data pipeline executed successfully.")
         
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")

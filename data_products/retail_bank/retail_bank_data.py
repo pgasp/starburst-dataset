@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 import os
 import sys
+# ADDED argparse for command-line options
+import argparse 
 from dotenv import load_dotenv
 import logging
 
@@ -21,18 +23,15 @@ logging.basicConfig(
 
 
 # --- External Utility Imports (CLEANED) ---
-# Imports now directly reference the local 'shared_tools' package installed via setup.py
 try:
     from shared_tools.lakehouse_utils import setup_schema, upload_to_starburst_parallel
     from shared_tools.deploy import scan_and_deploy
     from shared_tools.env_utils import load_project_env
 except ImportError as e:
-    # Provides a helpful error if the package hasn't been installed yet
     logging.critical(f"FATAL ERROR: Could not import utility functions. Did you run 'pip install -e .' from the project root? Details: {e}")
     sys.exit(1)
 
 # Load environment variables
-# NEW CLEAN LOGIC: Load global, then local envs using the utility function
 load_project_env(__file__)
 fake = Faker()
 
@@ -172,6 +171,11 @@ def generate_retail_data():
 
 
 if __name__ == "__main__":
+    # --- 1. Argument Parsing (NEW) ---
+    parser = argparse.ArgumentParser(description="Generate Retail Banking data and deploy Data Products.")
+    parser.add_argument('--deploy-only', action='store_true', help='Skip schema setup and data ingestion, only deploy Data Products.')
+    args = parser.parse_args()
+
     config = get_config()
     # Create the SQLAlchemy engine string for connection (without schema/catalog yet)
     engine_string = f"trino://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['catalog']}"
@@ -179,19 +183,28 @@ if __name__ == "__main__":
     try:
         engine = create_engine(engine_string)
         
-        # 1. SETUP SCHEMA
-        if setup_schema(engine, config['catalog'], config['schema'], config['location']):
-            
-            # 2. GENERATE DATA
-            data_tables = generate_retail_data()
-            
-            # 3. UPLOAD DATA (Now includes 6 tables)
-            upload_to_starburst_parallel(engine, config['schema'], data_tables)
-            
-            # 4. DEPLOY DATAPRODUCT (Assumes the YAML is in ./retail_bank and fixed for DATE_DIFF)
-            scan_and_deploy("./retail_bank")
-            
-            logging.info("Retail data pipeline executed successfully.")
+        if not args.deploy_only:
+            # 1. SETUP SCHEMA
+            if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+                
+                # 2. GENERATE DATA
+                data_tables = generate_retail_data()
+                
+                # 3. UPLOAD DATA (Now includes 6 tables)
+                upload_to_starburst_parallel(engine, config['schema'], data_tables)
+            else:
+                logging.error("Schema setup failed. Cannot proceed to deploy Data Products.")
+                sys.exit(1)
+        else:
+            logging.info("Deployment only mode: Skipping schema setup and data generation/upload.")
+        
+        # 4. DEPLOY DATAPRODUCTS (This step is run regardless of deploy_only flag)
+        # FIX: Use the correct, relative path for scan_and_deploy
+        deploy_path = os.path.dirname(os.path.abspath(__file__))
+        
+        scan_and_deploy(deploy_path)
+        
+        logging.info("Retail data pipeline executed successfully.")
         
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")

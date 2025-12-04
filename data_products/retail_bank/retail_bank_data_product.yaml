@@ -26,7 +26,6 @@ views:
       WITH AccountSummary AS (
           SELECT
               AccountID, CustomerID, AccountType, DateOpened, Balance,
-              -- FIX: Use DATE_DIFF for correct type conversion
               DATE_DIFF('day', DateOpened, current_date) as AccountAgeDays
           FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.accounts 
       )
@@ -74,7 +73,6 @@ views:
       )
       SELECT 
           a.CustomerID, a.AccountID, ra.RecentWithdrawals, ra.FraudCount,
-          -- FIX: Use DATE_DIFF for the division to calculate account age in days
           CAST( (COALESCE(ra.FraudCount, 0) * 10) + (1000.0 / CAST(DATE_DIFF('day', a.DateOpened, current_date) AS DOUBLE)) AS DOUBLE ) AS CalculatedRiskScore
       FROM ${RETAIL_RAW_CATALOG}.${RETAIL_RAW_SCHEMA}.accounts a
       LEFT JOIN RecentActivity ra ON a.AccountID = ra.AccountID
@@ -144,7 +142,6 @@ views:
           cc.TotalResponses,
           CAST(cc.TotalResponses * 100.0 / cc.TotalCampaigns AS DOUBLE) AS ResponseRatePct,
           cc.LastEngagedDate,
-          -- FIX: Use DATE_DIFF for correct type conversion
           DATE_DIFF('day', cc.LastEngagedDate, current_date) AS RecencyDays
       FROM CustomerCampaigns cc
       WHERE cc.TotalCampaigns > 0

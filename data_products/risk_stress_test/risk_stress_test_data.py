@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 import os
 import sys
+# NEW IMPORT
+import argparse
 # Removed: from dotenv import load_dotenv (Now imported via env_utils)
 import logging
 
@@ -139,25 +141,37 @@ def generate_risk_data():
 
 
 if __name__ == "__main__":
+    # 1. Argument Parsing (NEW)
+    parser = argparse.ArgumentParser(description="Generate Risk & Stress Test data and deploy Data Products.")
+    parser.add_argument('--deploy-only', action='store_true', help='Skip schema setup and data ingestion, only deploy Data Products.')
+    args = parser.parse_args()
+    
     config = get_config()
     engine_string = f"trino://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['catalog']}"
     
     try:
         engine = create_engine(engine_string)
         
-        # 1. SETUP SCHEMA
-        if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+        if not args.deploy_only:
+            # 1. SETUP SCHEMA
+            if setup_schema(engine, config['catalog'], config['schema'], config['location']):
+                
+                # 2. GENERATE DATA
+                data_tables = generate_risk_data()
+                
+                # 3. UPLOAD DATA
+                upload_to_starburst_parallel(engine, config['schema'], data_tables)
+            else:
+                logging.error("Schema setup failed. Cannot proceed to deploy Data Products.")
+                sys.exit(1)
+        else:
+            logging.info("Deployment only mode: Skipping schema setup and data generation/upload.")
             
-            # 2. GENERATE DATA
-            data_tables = generate_risk_data()
+        # 4. DEPLOY DATAPRODUCTS
+        deploy_path = os.path.dirname(os.path.abspath(__file__))
+        scan_and_deploy(deploy_path)
             
-            # 3. UPLOAD DATA
-            upload_to_starburst_parallel(engine, config['schema'], data_tables)
-            
-            # 4. DEPLOY DATAPRODUCTS
-            scan_and_deploy("./risk_stress_test")
-            
-            logging.info("Risk & Stress Test data pipeline executed successfully.")
+        logging.info("Risk & Stress Test data pipeline executed successfully.")
         
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")
