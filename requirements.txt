@@ -9,4 +9,5 @@ sqlalchemy-trino
 pystarburst
 openai
 pydantic
+google-generativeai
 -e .
