@@ -110,31 +110,42 @@ You must strictly follow the existing patterns, directory structure, and coding 
 {context}
 """
 
-def generate_response(user_input, context):
+def generate_response(user_input, context, chat_session=None):
     """
-    Sends the prompt to Gemini and gets the response.
+    Sends the prompt to Gemini and gets the response, maintaining chat history.
     """
-    # .format() will now correctly ignore {{CATALOG}} and only replace {context}
-    full_prompt = SYSTEM_PROMPT.format(context=context) + f"\n\n**User Request:** {user_input}\n"
-    
+    # Initialize chat session if it doesn't exist
+    if chat_session is None:
+        initial_prompt = SYSTEM_PROMPT.format(context=context)
+        chat_session = model.start_chat(history=[
+            {"role": "user", "parts": [initial_prompt]},
+            {"role": "model", "parts": ["Understood. I am ready to generate Data Product code based on your requests."]}
+        ])
+
     try:
         logging.info("Sending request to Gemini...")
-        response = model.generate_content(full_prompt)
+        response = chat_session.send_message(user_input)
         logging.info("Received response from Gemini.")
-        return response.text
+        return response.text, chat_session
     except Exception as e:
         # Logs the full stack trace for debugging API errors
         logging.error(f"Gemini API call failed: {e}", exc_info=True)
-        return f"Error communicating with Gemini: {e}"
+        return f"Error communicating with Gemini: {e}", chat_session
 
 def save_generated_files(response_text):
     """
-    Parses the LLM response and saves files to disk.
+    Parses the LLM response.
+    - If file markers are found, saves files to disk.
+    - If no file markers are found, prints the response to stdout.
     Look for markers like: ### FILE: data_products/domain/filename.ext
     """
     # Regex to find file blocks
     file_blocks = re.split(r'### FILE:\s*', response_text)
     
+    # If no file markers are found, return None to indicate conversational response
+    if len(file_blocks) < 2:
+        return None
+
     # Skip the first split if it's empty text before the first file
     if not file_blocks[0].strip():
         file_blocks = file_blocks[1:]
@@ -153,10 +164,12 @@ def save_generated_files(response_text):
         # Determine content (everything after the first line)
         code_content = '\n'.join(lines[1:])
         
-        # Clean up Markdown code fences
-        code_content = re.sub(r'^```[a-zA-Z]*\n', '', code_content) # Remove start ```python
-        code_content = re.sub(r'\n```$', '', code_content) # Remove end ```
-        code_content = re.sub(r'^```$', '', code_content)  # Remove stray ```
+        # --- CLEANING: Remove Markdown Fences ---
+        # Removes ```python, ```yaml, ``` at start/end
+        code_content = re.sub(r'^```[a-zA-Z0-9]*\n', '', code_content) 
+        code_content = re.sub(r'\n```$', '', code_content) 
+        code_content = re.sub(r'^```$', '', code_content)
+        # ----------------------------------------
         
         # Ensure directory exists
         directory = os.path.dirname(file_path)
@@ -190,6 +203,8 @@ def main():
     logging.info("Context loaded. Ready for requests.")
     print("Example: 'Create a dataset for airline flight operations with data products for delays and passenger traffic.'")
     
+    chat_session = None
+
     while True:
         try:
             user_input = input("\n> ")
@@ -200,20 +215,19 @@ def main():
                 continue
 
             print("\nThinking and generating code... (This may take a minute)")
-            response = generate_response(user_input, context)
+            response_text, chat_session = generate_response(user_input, context, chat_session)
             
-            print("\n--- LLM Response ---")
-            # print(response) # Uncomment to debug full text
-            
-            print("\n--- Saving Files ---")
-            saved_files = save_generated_files(response)
+            # Guardrail logic: Check if files were generated
+            saved_files = save_generated_files(response_text)
             
             if saved_files:
-                print(f"\nSuccessfully generated {len(saved_files)} files.")
+                print("\n--- Files Generated ---")
+                print(f"Successfully generated {len(saved_files)} files.")
                 print("Review the files and run the generation script when ready.")
             else:
-                logging.warning("No files were automatically saved. Please check the raw response or try a clearer prompt.")
-                # print(f"Raw Output Snippet: {response[:500]}...")
+                # If no files, print the LLM's response directly
+                print("\n--- Assistant Response ---")
+                print(response_text)
 
         except KeyboardInterrupt:
             print("\nExiting...")
