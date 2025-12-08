@@ -47,3 +47,4 @@ Each domain-specific Python script (e.g., `telecom/telecom_data.py`) follows a f
 
 ---  
 This framework provides a robust solution for generating, managing, and deploying synthetic datasets with a semantic layer, enabling efficient data pipeline demonstrations across various industries.  
+

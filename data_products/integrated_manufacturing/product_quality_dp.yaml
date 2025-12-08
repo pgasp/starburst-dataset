@@ -1,0 +1,72 @@
+# integrated_manufacturing/product_quality_dp.yaml
+
+# --- PRODUCT & QUALITY ASSURANCE DATA PRODUCT (PLM/QMS) ---
+name: "Manufacturing Product Design & Quality"
+description: "Semantic layer for tracking product revision quality, inspection failure rates, and linking defects to specific components."
+summary: "Views for QMS Defect Tracking and PLM Integrity"
+
+# DATA PRODUCT DESTINATION (Schema 2: Quality)
+domain: "Integrated Manufacturing"
+catalog: ${MANUF_QUALITY_DP_CATALOG}
+schema: ${MANUF_QUALITY_DP_SCHEMA}
+
+owners:
+  - name: "Quality Assurance & PLM"
+    email: "quality@mfg-corp.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Component Defect Rate by Revision (QMS/PLM)
+  - name: "v_component_defect_rate"
+    description: "Calculates the failure rate for a component based on QMS inspection results, broken down by PLM revision."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          p.PartID,
+          p.PartName,
+          p.PartRevision,
+          COUNT(i.InspectionID) AS TotalChecks,
+          SUM(CASE WHEN i.Result = 'FAIL' THEN 1 ELSE 0 END) AS FailCount,
+          CAST(SUM(CASE WHEN i.Result = 'FAIL' THEN 1 ELSE 0 END) AS DOUBLE) * 100 / COUNT(i.InspectionID) AS DefectRate_Pct
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.qms_inspection_records i
+      JOIN ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.plm_product_master p ON i.ComponentPartID = p.PartID
+      GROUP BY 1, 2, 3
+      HAVING COUNT(i.InspectionID) > 5 
+      ORDER BY DefectRate_Pct DESC
+      
+    columns:
+      - name: "PartID"
+        type: "varchar"
+        description: "Unique identifier for the component."
+      - name: "PartRevision"
+        type: "varchar"
+        description: "The current design revision from PLM."
+      - name: "DefectRate_Pct"
+        type: "double"
+        description: "Percentage of inspections that resulted in a failure."
+
+  # 2. Quality Check Throughput by Inspector (QMS)
+  - name: "v_inspector_throughput"
+    description: "Monitors the number of quality checks completed by each inspector."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          InspectorID,
+          COUNT(InspectionID) AS ChecksCompleted,
+          SUM(CASE WHEN Result = 'FAIL' THEN 1 ELSE 0 END) AS FailuresReported
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.qms_inspection_records
+      GROUP BY 1
+      ORDER BY ChecksCompleted DESC
+      
+    columns:
+      - name: "InspectorID"
+        type: "varchar"
+        description: "Identifier for the quality assurance technician."
+      - name: "ChecksCompleted"
+        type: "bigint"
+        description: "Total number of inspections completed."

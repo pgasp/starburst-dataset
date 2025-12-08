@@ -1,0 +1,102 @@
+# integrated_manufacturing/value_chain_federated_dp.yaml
+
+# --- CROSS-FUNCTIONAL VALUE CHAIN DATA PRODUCT (Federated) ---
+name: "Manufacturing Value Chain Profitability"
+description: "Federated layer linking raw material costs (SCM/ERP) to manufacturing efficiency (MES) and final demand (CRM)."
+summary: "Views for Cost-of-Goods-Sold and Demand Fulfillment"
+
+# DATA PRODUCT DESTINATION (Schema 3: Federated)
+domain: "Integrated Manufacturing"
+catalog: ${MANUF_FEDERATED_DP_CATALOG}
+schema: ${MANUF_FEDERATED_DP_SCHEMA}
+
+owners:
+  - name: "Executive & Finance"
+    email: "finance@mfg-corp.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Total Cost of Finished Goods (ERP/SCM Federation - Stock Management/Cost)
+  - name: "v_cost_of_finished_goods"
+    description: "Calculates a final cost estimate by federating planned ERP cost, actual SCM purchase cost, and MES efficiency."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH SCMCosts AS (
+          SELECT
+              PartID,
+              AVG(PurchasePrice) AS AvgSCMPurchasePrice,
+              AVG(DeliveryLeadTime_Days) AS AvgLeadTime
+          FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.scm_supplier_invoices
+          GROUP BY 1
+      )
+      SELECT
+          p.PartID,
+          p.PartName,
+          p.UnitCost_ERP AS PlannedCost_ERP,
+          sc.AvgSCMPurchasePrice AS ActualCost_SCM,
+          sc.AvgLeadTime AS SupplierLeadTime_Days,
+          (sc.AvgSCMPurchasePrice / p.UnitCost_ERP) - 1 AS CostVariance_Pct
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.plm_product_master p
+      JOIN SCMCosts sc ON p.PartID = sc.PartID
+      WHERE p.PartType != 'Raw Material'
+      ORDER BY CostVariance_Pct DESC
+      
+    columns:
+      - name: "PartID"
+        type: "varchar"
+        description: "ID of the component/finished good."
+      - name: "PlannedCost_ERP"
+        type: "double"
+        description: "Standard unit cost from ERP master data."
+      - name: "ActualCost_SCM"
+        type: "double"
+        description: "Average purchase price based on recent supplier invoices."
+      - name: "CostVariance_Pct"
+        type: "double"
+        description: "Percentage variance between actual purchase cost and planned ERP cost."
+
+  # 2. Demand Fulfillment vs. Production Schedule (CRM/MES Federation - Optimization/Efficiency)
+  - name: "v_demand_fulfillment_gap"
+    description: "Compares customer demand (CRM) against available production schedule (MES) by Top-Level Part ID."
+    security_mode: "INVOKER" 
+    
+    query: |
+      WITH CustomerDemand AS (
+          SELECT
+              ERP_TopLevelPartID AS PartID,
+              SUM(QuantityOrdered) AS TotalDemand
+          FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.crm_customer_orders
+          GROUP BY 1
+      ),
+      ProductionSchedule AS (
+          SELECT
+              TopLevelPartID AS PartID,
+              SUM(PlannedQty) AS TotalScheduledProduction
+          FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.mes_work_orders
+          WHERE Status IN ('Scheduled', 'In_Progress')
+          GROUP BY 1
+      )
+      SELECT
+          cd.PartID,
+          cd.TotalDemand,
+          ps.TotalScheduledProduction,
+          ps.TotalScheduledProduction - cd.TotalDemand AS FulfillmentGap
+      FROM CustomerDemand cd
+      FULL JOIN ProductionSchedule ps ON cd.PartID = ps.PartID
+      WHERE ps.TotalScheduledProduction IS NULL OR ps.TotalScheduledProduction < cd.TotalDemand
+      ORDER BY FulfillmentGap ASC
+      
+    columns:
+      - name: "PartID"
+        type: "varchar"
+        description: "ID of the top-level assembly/product."
+      - name: "TotalDemand"
+        type: "bigint"
+        description: "Total quantity demanded by customers (CRM)."
+      - name: "FulfillmentGap"
+        type: "bigint"
+        description: "Difference between scheduled production and customer demand (Negative = Risk of Stockout)."

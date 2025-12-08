@@ -1,0 +1,75 @@
+# integrated_manufacturing/operational_process_dp.yaml
+
+# --- OPERATIONAL PROCESS & SCADA DATA PRODUCT (MES/PLC/SCADA) ---
+name: "Manufacturing Realtime Operational Status"
+description: "Semantic layer for MES execution and real-time machine health monitoring via SCADA telemetry (PLC data). Focuses on Optimization & Factory Performance."
+summary: "Views for Machine Health and Work Order Execution"
+
+# DATA PRODUCT DESTINATION (Schema 1: Operational)
+domain: "Integrated Manufacturing"
+catalog: ${MANUF_OPERATIONAL_DP_CATALOG}
+schema: ${MANUF_OPERATIONAL_DP_SCHEMA}
+
+owners:
+  - name: "Maintenance Engineering"
+    email: "mes_ops@mfg-corp.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Real-Time Machine Health (SCADA/PLC Analysis)
+  - name: "v_machine_telemetry_health"
+    description: "Calculates the average reading and anomaly rate per machine/sensor type over the last 12 months."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          MachineID,
+          SensorType,
+          AVG(Value) AS AvgReading,
+          MAX(Value) AS MaxReading,
+          SUM(CASE WHEN Alarm_Flag = TRUE THEN 1 ELSE 0 END) AS AlarmCount,
+          CAST(SUM(CASE WHEN Alarm_Flag = TRUE THEN 1 ELSE 0 END) AS DOUBLE) * 100 / COUNT(*) AS AlarmRate_Pct
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.scada_sensor_telemetry
+      WHERE CAST(ReadingTime AS TIMESTAMP) >= (NOW() - INTERVAL '12' MONTH)
+      GROUP BY MachineID, SensorType
+      HAVING COUNT(*) > 100 
+      ORDER BY AlarmRate_Pct DESC
+      
+    columns:
+      - name: "MachineID"
+        type: "varchar"
+        description: "Identifier for the CNC/Assembly machine."
+      - name: "SensorType"
+        type: "varchar"
+        description: "Type of data being measured (e.g., Spindle_Temp)."
+      - name: "AlarmRate_Pct"
+        type: "double"
+        description: "Percentage of sensor readings that triggered an alarm in the last 12 Months."
+
+  # 2. Work Order Execution Status (MES)
+  - name: "v_work_order_execution_status"
+    description: "Lists all work orders currently in progress, linked to the responsible machine."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          wo.WorkOrderID,
+          wo.TopLevelPartID,
+          wo.PlannedQty,
+          wo.MachineID,
+          wo.ScheduledStart,
+          wo.Status
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.mes_work_orders wo
+      WHERE wo.Status = 'In_Progress'
+      ORDER BY wo.ScheduledStart ASC
+      
+    columns:
+      - name: "WorkOrderID"
+        type: "varchar"
+        description: "Unique production work order ID."
+      - name: "MachineID"
+        type: "varchar"
+        description: "Machine currently executing the work order."
