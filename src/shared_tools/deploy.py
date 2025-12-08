@@ -158,15 +158,7 @@ def load_yaml(filepath):
 
 def construct_payload(config, domain_id):
     
-    # NEW HELPER: Sanitizes the SQL string to remove non-essential whitespace
-    def sanitize_query(sql_string):
-        if not sql_string:
-            return ""
-        # 1. Replace newlines/tabs/multiple spaces with a single space
-        sanitized = re.sub(r'\s+', ' ', sql_string.strip())
-        # 2. Trim leading/trailing whitespace
-        return sanitized.strip()
-        
+    
     # Assembles the Data Product payload and runs MV validation checks
     payload = {
         "name": config['name'], "catalogName": config['catalog'],
@@ -183,7 +175,7 @@ def construct_payload(config, domain_id):
 
         payload['views'].append({
             "name": v['name'], "description": v.get('description', ''),
-            "definitionQuery": sanitize_query(v['query']), # <-- SANITIZATION APPLIED
+            "definitionQuery": v['query'], 
             "viewSecurityMode": security_value, 
             "columns": v.get('columns', []), "markedForDeletion": False
         })
