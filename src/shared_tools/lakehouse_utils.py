@@ -11,7 +11,7 @@ from pystarburst import Session
 from trino.auth import BasicAuthentication 
 
 # --- Configuration Constant for Chunking ---
-BATCH_SIZE_ROWS = 5000 
+BATCH_SIZE_ROWS = 3000 
 
 # --- Utility 1 & Helper 1 (Unchanged) ---
 

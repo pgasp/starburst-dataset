@@ -6,6 +6,7 @@ import yaml
 import requests
 import argparse
 import re 
+from dotenv import load_dotenv
 
 # Global State Dictionary for lazy initialization
 # Stores the authenticated session and configuration variables once they are loaded.
@@ -156,6 +157,16 @@ def load_yaml(filepath):
         return None
 
 def construct_payload(config, domain_id):
+    
+    # NEW HELPER: Sanitizes the SQL string to remove non-essential whitespace
+    def sanitize_query(sql_string):
+        if not sql_string:
+            return ""
+        # 1. Replace newlines/tabs/multiple spaces with a single space
+        sanitized = re.sub(r'\s+', ' ', sql_string.strip())
+        # 2. Trim leading/trailing whitespace
+        return sanitized.strip()
+        
     # Assembles the Data Product payload and runs MV validation checks
     payload = {
         "name": config['name'], "catalogName": config['catalog'],
@@ -163,15 +174,6 @@ def construct_payload(config, domain_id):
         "summary": config.get('summary', ''), "description": config.get('description', ''),
         "owners": config.get('owners', []), "views": [], "materializedViews": []
     }
-
-    # Helper function to sanitize SQL queries
-    def sanitize_query(sql_string):
-        if not sql_string:
-            return ""
-        # 1. Replace newlines/tabs with a single space
-        sanitized = re.sub(r'\s+', ' ', sql_string.strip())
-        # 2. Trim leading/trailing whitespace
-        return sanitized.strip()
 
     # Add standard Views
     for v in config.get('views', []):
@@ -181,7 +183,7 @@ def construct_payload(config, domain_id):
 
         payload['views'].append({
             "name": v['name'], "description": v.get('description', ''),
-            "definitionQuery": sanitize_query(v['query']), # <-- SANITIZATION APPLIED HERE
+            "definitionQuery": sanitize_query(v['query']), # <-- SANITIZATION APPLIED
             "viewSecurityMode": security_value, 
             "columns": v.get('columns', []), "markedForDeletion": False
         })
@@ -190,8 +192,25 @@ def construct_payload(config, domain_id):
     for mv in config.get('materialized_views', []):
         mv_props = {}
         
-        # ... (MV validation and property mapping logic remains the same) ...
-
+        # --- 1. Refresh Strategy (Mutually Exclusive) ---
+        if 'refresh_interval' in mv and 'cron' in mv:
+            print(f"Error: MV '{mv['name']}' cannot have both 'refresh_interval' and 'cron'."); sys.exit(1)
+        if 'refresh_interval' in mv: 
+            interval_str = mv['refresh_interval']
+            mv_props['refresh_interval'] = interval_str
+        elif 'cron' in mv: mv_props['refresh_schedule'] = mv['cron']
+            
+        # --- 2. MV Time Validation ---
+        duration_str = mv.get('max_import_duration')
+        if 'refresh_interval' in mv_props and duration_str:
+            try:
+                interval_min = parse_duration_to_minutes(interval_str)
+                duration_min = parse_duration_to_minutes(duration_str)
+                if interval_min <= duration_min * 1.10:
+                    raise ValueError(f"MV '{mv['name']}': The refresh interval ({interval_str}) must be significantly LONGER than the max import duration ({duration_str}).")
+            except ValueError as e:
+                print(f"Deployment failed due to MV validation: {e}"); sys.exit(1)
+        
         # Map properties (ensuring all are strings for the API payload)
         optional_fields = {
             'incremental_column': 'incremental_column', 'max_import_duration': 'max_import_duration',
@@ -203,7 +222,7 @@ def construct_payload(config, domain_id):
                 mv_props[api_key] = str(value) if not isinstance(value, str) else value
 
         mv_payload = {
-            "name": mv['name'], "description": mv.get('description', ''), "definitionQuery": sanitize_query(mv['query']), # <-- SANITIZATION APPLIED HERE
+            "name": mv['name'], "description": mv.get('description', ''), "definitionQuery": sanitize_query(mv['query']), 
             "columns": mv.get('columns', []), "markedForDeletion": False, "definitionProperties": mv_props
         }
         payload['materializedViews'].append(mv_payload)
@@ -243,46 +262,30 @@ def deploy_single_file(filepath):
     print(f"\n--- Processing: {config['name']} ({os.path.basename(filepath)}) ---")
 
     try:
-        # 2. Resolve Domain ID 
+        # 2. Resolve Domain ID (calls consolidated domain function)
         domain_id = get_or_create_domain_id(domain_name) 
         
         # 3. Check Existence & Construct Payload
         product_id = find_existing_product(config['name'])
         payload = construct_payload(config, domain_id) 
 
-        # --- AUDIT BLOCK ---
+        # 4. Create or Update (With HTTP Auditing)
         if product_id:
             action = "PUT"
             url = f"{sb_url}/api/v1/dataProduct/products/{product_id}"
+            print(f"DEBUG API: {action} {url} (Payload size: {len(json.dumps(payload))/1024:.1f} KB)")
+            resp = session.put(url, json=payload)
         else:
             action = "POST"
             url = f"{sb_url}/api/v1/dataProduct/products"
-        
-        # 4. Execute Request
-        if product_id:
-            resp = session.put(url, json=payload)
-        else:
+            print(f"DEBUG API: {action} {url} (Payload size: {len(json.dumps(payload))/1024:.1f} KB)")
             resp = session.post(url, json=payload)
 
-        # 5. Check Response Status
-        if resp.status_code == 400:
-            print("\n" + "="*80)
-            print("❌ DEPLOYMENT ERROR: 400 BAD REQUEST")
-            print("="*80)
-            print(f"FAILED URL: {url}")
-            print(f"FAILED METHOD: {action}")
-            print(f"ERROR DETAILS: {resp.text}")
-            print("\n--- REPLAYABLE POSTMAN/DEBUG PAYLOAD ---")
-            print(json.dumps(payload, indent=2))
-            print("----------------------------------------\n")
-            raise requests.exceptions.HTTPError(f"400 Client Error: Bad Request for url: {url}", response=resp)
-
-        resp.raise_for_status() # Raise for other HTTP errors (401, 403, 500)
-        
+        resp.raise_for_status()
         product_data = resp.json()
         product_id = product_data['id']
 
-        # 6. Publish
+        # 5. Publish
         print("   > Triggering Publish workflow...")
         publish_url = f"{sb_url}/api/v1/dataProduct/products/{product_id}/workflows/publish"
         print(f"DEBUG API: POST {publish_url}")
@@ -314,6 +317,9 @@ def scan_and_deploy(folder_path):
     print(f"\nSUMMARY: Successfully deployed {success_count}/{len(files)} Data Products.")
 
 if __name__ == "__main__":
+    # NOTE: The calling script (e.g., your main run.py) must call load_dotenv() 
+    # before executing this __main__ block.
+    
     parser = argparse.ArgumentParser(description="Deploy Data Products from YAML definitions.")
     parser.add_argument("--folder", type=str, default="./definitions", help="Path to the folder containing YAML files")
     
