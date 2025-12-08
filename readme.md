@@ -55,3 +55,23 @@ This framework provides a robust solution for generating, managing, and deployin
 `Create a Data Product for Supply Chain Logistics. Entities: Shipments, Warehouses, Carriers, Routes. Goal: Track On-Time Delivery Rate and Average Cost per Mile. Note: Use the existing project structure.`
 
 
+```console
+Please generate a complete dataset and two distinct Data Products for Energy Consumption Monitoring in a Smart Grid context.
+    1. The Dataset (Synthetic Data) Create a Python generation script (energy_data.py) for a relational schema with these key entities:
+        Smart Meters: (MeterID, Location, CustomerType, InstallationDate)
+        Substations: (SubstationID, Region, Capacity_MW)
+        Meter Readings: (ReadingID, MeterID (FK), Timestamp, Usage_kWh, Voltage_V) - High volume time-series data.
+        Weather Data: (WeatherID, Region (FK), Date, Temperature_C, Humidity) - For correlation analysis.
+        Tariff Plans: (PlanID, Name, PeakRate, OffPeakRate)
+    2. The Data Products (Semantic Layer) Provide two separate YAML definitions (peak_usage_dp.yaml and forecast_dp.yaml) adhering to the project's strict naming and security conventions:
+        Data Product A: Peak Usage Analysis (Operations Focus)
+            Goal: Identify grid strain and load balancing needs.
+            View 1: v_regional_peak_load - Aggregates max usage per substation/region per hour.
+            View 2: v_high_usage_customers - Lists customers exceeding a threshold during peak hours (e.g., 6 PM - 9 PM).
+    Data Product B: Consumption Forecasting (Planning Focus)
+            Goal: Predict future demand based on historical trends and weather.
+            Materialized View: mv_daily_usage_trends - Aggregates daily total consumption per region joined with average temperature. Set a refresh_interval of 24h.
+            View: v_weather_impact_correlation - Calculates the correlation between temperature drops/spikes and energy usage spikes.
+    Constraints:
+            Ensure the domain is set to 'Energy & Utilities'.
+```
