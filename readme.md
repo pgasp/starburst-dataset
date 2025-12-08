@@ -48,3 +48,10 @@ Each domain-specific Python script (e.g., `telecom/telecom_data.py`) follows a f
 ---  
 This framework provides a robust solution for generating, managing, and deploying synthetic datasets with a semantic layer, enabling efficient data pipeline demonstrations across various industries.  
 
+----
+# 🚀 How to Use It
+## Prompt example :
+### Supply Chain Logistics
+`Create a Data Product for Supply Chain Logistics. Entities: Shipments, Warehouses, Carriers, Routes. Goal: Track On-Time Delivery Rate and Average Cost per Mile. Note: Use the existing project structure.`
+
+
