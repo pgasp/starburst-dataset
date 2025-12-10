@@ -1,4 +1,5 @@
 requests
+setuptools
 pyyaml
 python-dotenv
 pandas
@@ -10,4 +11,5 @@ pystarburst
 openai
 pydantic
 google-generativeai
+gradio
 -e .

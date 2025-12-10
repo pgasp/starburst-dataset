@@ -32,6 +32,7 @@ def _initialize_session():
     sb_domain_location_base = os.getenv("SB_DOMAIN_LOCATION_BASE")
 
     if not all([sb_url, sb_user, sb_pass, sb_domain_location_base]):
+        # This will exit the deployment script, but Streamlit should catch the error
         print("Error: Missing critical configuration (SB_URL, SB_USER, SB_PASSWORD, or SB_DOMAIN_LOCATION_BASE).")
         sys.exit(1)
 
@@ -44,6 +45,37 @@ def _initialize_session():
     _STATE['session'] = session
     _STATE['sb_url'] = sb_url
     _STATE['base_location'] = sb_domain_location_base
+
+# ==============================================================================
+# HEALTH CHECK
+# ==============================================================================
+
+def starburst_health_check():
+    """
+    Checks Starburst connectivity by attempting a simple authenticated GET request
+    to the domains endpoint.
+    Returns: (bool, str) -> (Status, Message)
+    """
+    try:
+        # Note: We must call _initialize_session() first to ensure the session and URL are set
+        _initialize_session() 
+        session = _STATE['session']
+        sb_url = _STATE['sb_url']
+
+        # Use a lightweight, authenticated endpoint, e.g., listing domains
+        url = f"{sb_url}/api/v1/dataProduct/domains"
+        
+        # Add timeout for robustness
+        resp = session.get(url, timeout=5) 
+        
+        # Check for success status code (200-299)
+        if 200 <= resp.status_code < 300:
+            return True, "Connection successful."
+        else:
+            return False, f"API call failed: Status {resp.status_code}"
+
+    except Exception as e:
+        return False, f"Connection failed: {e}"
 
 # ==============================================================================
 # DOMAIN MANAGEMENT FUNCTIONS (Consolidated Logic)
@@ -67,7 +99,6 @@ def create_data_domain(domain_name: str):
     payload = {"name": domain_name, "schemaLocation": schema_location}
     
     print(f"   > Domain '{domain_name}' not found. Attempting to create it with location: {schema_location}...")
-    print(f"DEBUG API: POST {url} (Create Domain: {domain_name})") 
     
     resp = session.post(url, json=payload)
     
@@ -235,6 +266,11 @@ def poll_status(status_url):
                 print(""); return state.get('status') == 'COMPLETED'
             print(".", end="", flush=True); time.sleep(2)
         except KeyboardInterrupt: return False
+
+def sanitize_query(query):
+    # No-op for now; assumes queries are safe but keeps the function for future expansion
+    return query
+
 
 # --- MAIN EXECUTION LOGIC ---
 

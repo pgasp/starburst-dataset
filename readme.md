@@ -50,11 +50,13 @@ This framework provides a robust solution for generating, managing, and deployin
 
 ----
 # 🚀 How to Use It
-## Prompt example :
-### Supply Chain Logistics
-`Create a Data Product for Supply Chain Logistics. Entities: Shipments, Warehouses, Carriers, Routes. Goal: Track On-Time Delivery Rate and Average Cost per Mile. Note: Use the existing project structure.`
+## Prompt examples :
+Supply Chain Logistics
+```console
+Create a Data Product for Supply Chain Logistics. Entities: Shipments, Warehouses, Carriers, Routes. Goal: Track On-Time Delivery Rate and Average Cost per Mile. Note: Use the existing project structure.
+```
 
-
+Energy Consumption Monitoring in a Smart Grid 
 ```console
 Please generate a complete dataset and two distinct Data Products for Energy Consumption Monitoring in a Smart Grid context.
     1. The Dataset (Synthetic Data) Create a Python generation script (energy_data.py) for a relational schema with these key entities:
