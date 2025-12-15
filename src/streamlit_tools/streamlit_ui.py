@@ -46,6 +46,29 @@ def show_view_details(view_data: Dict[str, Any]):
     else:
         st.info("No explicit column definitions found in YAML.")
 
+# --- Helper: Cached Product Lookup ---
+# We cache this to avoid calling the Starburst API every time the Streamlit app reruns.
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_product_web_link(_client, product_name: str, sb_base_url: str) -> str | None:
+    """
+    Searches for a product by name and returns its deep link URL if found.
+    """
+    try:
+        # Search API returns a list of fuzzy matches
+        results = _client.search_products(product_name)
+        # We need an exact match on the name
+        remote_product = next((p for p in results if p['name'] == product_name), None)
+        
+        if remote_product:
+            pid = remote_product['id']
+            # Remove trailing slash from base URL if present
+            base = sb_base_url.rstrip('/')
+            # Construct the deep link
+            return f"{base}/ui/insights/dataproduct/product/display/{pid}"
+    except Exception:
+        return None
+    return None
+
 
 # --- 1. Sidebar Renderer (Dashboard Style) ---
 def render_sidebar():
@@ -57,6 +80,7 @@ def render_sidebar():
     
     # Fetch config early to use SB_URL in the status indicator
     config = get_starburst_config_details()
+    sb_url_configured = config.get('SB_URL', 'N/A')
     
     with st.sidebar:
         st.header("🏭 Factory Control")
@@ -69,14 +93,10 @@ def render_sidebar():
         with col_h1:
             st.markdown("🟢 **AI Model**" if llm_status else "🔴 **AI Model**")
         with col_h2:
-            if sb_status:
-                sb_url = config.get('SB_URL', 'N/A')
-                if sb_url and sb_url != 'N/A':
-                    st.markdown(f"[🟢 **Starburst**]({sb_url})")
-                else:
-                    st.markdown("🟢 **Starburst**")
+            if sb_status and sb_url_configured != 'N/A':
+                st.markdown(f"[🟢 **Starburst**]({sb_url_configured})")
             else:
-                st.markdown("🔴 **Starburst**")
+                st.markdown("🔴 **Starburst**" if not sb_status else "🟢 **Starburst**")
 
         st.divider()
 
@@ -137,24 +157,12 @@ def render_sidebar():
                             st.info(f"_{dp['description']}_") # Data Product Description
                             
                             # --- WEB LINK LOGIC ---
-                            # Search for the product ID to build the deep link
-                            try:
-                                if sb_status: # Only attempt if Starburst is online
-                                    # Search by name
-                                    results = client.search_products(dp['name'])
-                                    # Find exact match
-                                    remote_product = next((p for p in results if p['name'] == dp['name']), None)
-                                    
-                                    if remote_product:
-                                        pid = remote_product['id']
-                                        # Construct URL: https://<HOST>/ui/insights/dataproduct/product/display/<UUID>
-                                        base_url = client.base_url.rstrip('/')
-                                        product_url = f"{base_url}/ui/insights/dataproduct/product/display/{pid}"
-                                        
-                                        st.markdown(f"[[🌐 Open in Starburst]]({product_url})")
-                            except Exception:
-                                # Silently fail if ID lookup doesn't work (e.g., product not deployed yet)
-                                pass
+                            # Only attempt to fetch link if Starburst is reachable and URL is configured
+                            if sb_status and sb_url_configured != 'N/A':
+                                product_link = get_product_web_link(client, dp['name'], sb_url_configured)
+                                if product_link:
+                                    # Use st.link_button for a nice UI element
+                                    st.link_button("🌐 Open in Starburst", product_link, use_container_width=True)
                             
                             st.markdown("**Views & Objects:**")
                             
@@ -179,9 +187,9 @@ def render_sidebar():
             st.markdown(f"**Host:** `{config['SB_HOST']}`")
             st.markdown(f"**User:** `{config['SB_USER']}`")
             
-            if config.get('SB_URL') and config['SB_URL'] != 'N/A':
+            if sb_url_configured != 'N/A':
                 st.markdown("---")
-                st.link_button("🚀 Open Starburst Web UI", config['SB_URL'], use_container_width=True)
+                st.link_button("🚀 Open Starburst Web UI", sb_url_configured, use_container_width=True)
 
 
 # --- 2. Main Content Renderer (Interactive Hero) ---
