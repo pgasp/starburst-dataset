@@ -45,7 +45,6 @@ def scan_data_products_for_catalog(root_dir: str = "data_products") -> List[Doma
 
         data_script_path = 'N/A'
         domain_products: List[DataProductEntry] = []
-        domain_desc_source = 'N/A' # Variable to hold the description for the domain object
         
         # 1. Scan for the single data script (*_data.py)
         for file in os.listdir(domain_path):
@@ -64,10 +63,20 @@ def scan_data_products_for_catalog(root_dir: str = "data_products") -> List[Doma
                     # Consolidate all views (standard and materialized)
                     all_views = []
                     for view in config.get('views', []):
-                        all_views.append({'name': view.get('name', 'N/A'), 'type': 'View', 'description': view.get('description', 'N/A')})
+                        all_views.append({
+                            'name': view.get('name', 'N/A'), 
+                            'type': 'View', 
+                            'description': view.get('description', 'N/A'),
+                            'columns': view.get('columns', []) 
+                        })
                         
                     for mv in config.get('materialized_views', []):
-                        all_views.append({'name': mv.get('name', 'N/A'), 'type': 'Materialized View', 'description': mv.get('description', 'N/A')})
+                        all_views.append({
+                            'name': mv.get('name', 'N/A'), 
+                            'type': 'Materialized View', 
+                            'description': mv.get('description', 'N/A'),
+                            'columns': mv.get('columns', [])
+                        })
                         
                     # Create the Data Product entry
                     dp_entry = {
@@ -78,22 +87,20 @@ def scan_data_products_for_catalog(root_dir: str = "data_products") -> List[Doma
                         'views': all_views
                     }
                     domain_products.append(dp_entry)
-                    
-                    # Set the Domain Description using the most descriptive text available from the first DP
-                    if domain_desc_source == 'N/A':
-                        domain_desc_source = config.get('description', config.get('summary', f"Domain for {config['domain']}."))
-
         
         # 3. Create the Domain Catalog Entry if any Data Products were found
         if domain_products:
             # Domain name from the YAML is authoritative
             canonical_domain_name = domain_products[0]['domain'] if domain_products and 'domain' in domain_products[0] else domain_name
             
+            # Use a generic description instead of borrowing from the first DP
+            domain_desc_display = f"Business Domain: {canonical_domain_name}"
+
             domain_catalog[domain_name] = {
                 'domain_name': canonical_domain_name,
                 'folder_name': domain_name,
                 'data_script_path': data_script_path,
-                'domain_description': domain_desc_source, # NEW FIELD
+                'domain_description': domain_desc_display, 
                 'data_products': domain_products
             }
                     

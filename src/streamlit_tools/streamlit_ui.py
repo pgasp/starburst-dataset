@@ -1,144 +1,231 @@
 import streamlit as st
 import os
+import pandas as pd
 from typing import List, Dict, Any
 
-# Assume shared utilities are available in the path
+# Shared Utilities
 from shared_tools.llm_utils import get_llm_model
 from shared_tools.ai_utils import load_project_context
 from shared_tools.dp_utils import scan_data_products_for_catalog
-from shared_tools.deploy import starburst_health_check 
-# Import handlers for the execution buttons and config
+from shared_tools.deploy import starburst_health_check
+from shared_tools.starburst_client import StarburstClient
 
+# Local Handlers
 from .streamlit_handlers import get_starburst_config_details, intSarburst_config
 
+# --- Helper: View Details Dialog ---
+@st.dialog("🔍 View Details", width="large")
+def show_view_details(view_data: Dict[str, Any]):
+    """
+    Displays detailed information about a specific view in a modal popup.
+    """
+    st.markdown(f"### `{view_data['name']}`")
+    st.caption(f"**Type:** {view_data['type']}")
+    st.markdown(f"**Description:** {view_data['description']}")
+    
+    st.divider()
+    st.markdown("#### 📋 Schema Definition")
+    
+    columns = view_data.get('columns', [])
+    if columns:
+        # Format for display
+        df = pd.DataFrame(columns)
+        # Rename for cleaner UI if keys exist
+        if not df.empty and 'name' in df.columns:
+            df = df.rename(columns={"name": "Column Name", "type": "Data Type", "description": "Description"})
+            st.dataframe(
+                df, 
+                column_config={
+                    "Column Name": st.column_config.TextColumn(width="medium"),
+                    "Data Type": st.column_config.TextColumn(width="small"),
+                    "Description": st.column_config.TextColumn(width="large"),
+                },
+                hide_index=True, 
+                use_container_width=True
+            )
+    else:
+        st.info("No explicit column definitions found in YAML.")
 
-# --- 1. Sidebar Renderer ---
+
+# --- 1. Sidebar Renderer (Dashboard Style) ---
 def render_sidebar():
-    """Renders the entire application sidebar."""
+    """Renders the dashboard-style sidebar with nested expanders."""
     intSarburst_config()  # Initialize Starburst configuration if needed
+    
+    # Initialize API Client
+    client = StarburstClient()
+    
+    # Fetch config early to use SB_URL in the status indicator
+    config = get_starburst_config_details()
+    
     with st.sidebar:
-        st.title("🏭 Factory Settings")
-        st.markdown("---") 
+        st.header("🏭 Factory Control")
         
-        # 1. System Status and LLM Context
-        st.subheader("🟢 System Status")
+        # --- 1. Compact Health Check ---
+        llm_status = "model" in st.session_state
+        sb_status, sb_msg = starburst_health_check()
         
-        # --- LLM Status Check ---
-        llm_status = False
-        try:
-            if "model" not in st.session_state:
-                # Assuming get_llm_model() handles initialization
-                st.session_state.model = get_llm_model() 
-            llm_status = True
-        except ValueError as e:
-            st.error(f"LLM Error: {e}")
-            st.stop() # Stop execution if the critical LLM configuration is missing
-            
-        # --- Starburst Status Check (NEW) ---
-        sb_status, sb_message = starburst_health_check()
+        col_h1, col_h2 = st.columns(2)
+        with col_h1:
+            st.markdown("🟢 **AI Model**" if llm_status else "🔴 **AI Model**")
+        with col_h2:
+            if sb_status:
+                sb_url = config.get('SB_URL', 'N/A')
+                if sb_url and sb_url != 'N/A':
+                    st.markdown(f"[🟢 **Starburst**]({sb_url})")
+                else:
+                    st.markdown("🟢 **Starburst**")
+            else:
+                st.markdown("🔴 **Starburst**")
 
-        if llm_status and sb_status:
-            st.success("All systems operational.")
-        else:
-            st.error(f"Starburst connection failed.")
-            
-        # 2. Cluster Configuration
-        st.subheader("☁️ Starburst Cluster ")
-        config_details = get_starburst_config_details()
-        with st.expander("Starburst ", expanded=True):
-            st.markdown(f"Host: `{config_details['SB_HOST']}`")
-            st.markdown(f"User: `{config_details['SB_USER']}`")
-            
-        st.markdown("---") 
+        st.divider()
+
+        # --- 2. Data Product Catalog with Search ---
+        st.subheader("📚 Data Domains")
         
-        # 3. Data Product Catalog
-        st.subheader("📚 Data Product Catalog")
+        # Scan the file system for domains
         catalog_list = scan_data_products_for_catalog(root_dir="data_products")
         
+        # Search Filter
+        search_query = st.text_input("Filter domains...", placeholder="e.g. automotive").lower()
+        
         if catalog_list:
-            st.info(f"Found {len(catalog_list)} active Data Domains.")
+            filtered_list = [
+                d for d in catalog_list 
+                if search_query in d['domain_name'].lower() 
+                or search_query in d['domain_description'].lower()
+            ]
             
-            # Sort by Domain name
-            sorted_domains = sorted(catalog_list, key=lambda x: x['domain_name'])
+            st.caption(f"Showing {len(filtered_list)} of {len(catalog_list)} domains")
             
-            for domain_obj in sorted_domains:
+            # --- DOMAIN LOOP ---
+            for domain_obj in sorted(filtered_list, key=lambda x: x['domain_name']):
                 
                 domain_name = domain_obj['domain_name']
-                domain_description = domain_obj['domain_description']
                 data_script = domain_obj['data_script_path']
-                domain_products = domain_obj['data_products']
+                products = domain_obj['data_products']
                 
-                # Display Domain name as title
-                with st.expander(f"**{domain_name}** ({len(domain_products)} DPs)", expanded=False):
+                # LEVEL 1: DOMAIN EXPANDER
+                with st.expander(f"📂 {domain_name}", expanded=False):
                     
-                    # --- Actions and Data Script ---
+                    # Metrics Row
+                    m1, m2 = st.columns(2)
+                    m1.metric("Products", len(products))
+                    total_views = sum(p['total_views'] for p in products)
+                    m2.metric("Views", total_views)
+                    
+                    # --- ACTION BUTTONS (Split into 2 Columns) ---
                     if data_script != 'N/A':
-                        st.markdown(f"**Pipeline Actions:**")
-                        col_run, col_deploy = st.columns(2)
-
-                        # Button 1: Run Full Pipeline (Generate and Deploy)
-                        if st.button("🚀 Run Data + Deploy", key=f"run_full_{domain_name}", type="primary"):
-                            st.session_state['command_to_execute'] = f"python {data_script}"
-                            st.rerun() 
-
-                        # Button 2: Deploy DP Only
-                        if st.button("🔄 Deploy Only", key=f"deploy_only_{domain_name}"):
-                            st.session_state['command_to_execute'] = f"python {data_script} --deploy-only"
-                            st.rerun()
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("🚀 Run All", key=f"run_{domain_obj['folder_name']}", help="Generate Data & Deploy", use_container_width=True):
+                                st.session_state['command_to_execute'] = f"python {data_script}"
+                                st.rerun()
+                        with c2:
+                            if st.button("🔄 Deploy", key=f"deploy_{domain_obj['folder_name']}", help="Deploy Metadata Only", use_container_width=True):
+                                st.session_state['command_to_execute'] = f"python {data_script} --deploy-only"
+                                st.rerun()
                     else:
-                        st.warning("No data generation script found in this domain folder.")
+                        st.warning("No script found.")
 
                     st.markdown("---")
-                    
-                    # --- List Data Products in Domain ---
-                    for dp in domain_products:
-                        st.markdown(f"**{dp['name']}**")
-                        # Show description of the Data Product
-                        st.caption(f"{dp.get('description', 'No description available.')} | Views: {dp['total_views']}") 
-                        
-                        # Optional: Expand to see view names
-                        with st.expander(f"View Details ({dp['total_views']})"):
+                    st.markdown("#### Data Products")
+
+                    # LEVEL 2: DATA PRODUCT EXPANDER
+                    for dp in products:
+                        with st.expander(f"📊 {dp['name']}", expanded=False):
+                            st.info(f"_{dp['description']}_") # Data Product Description
+                            
+                            # --- WEB LINK LOGIC ---
+                            # Search for the product ID to build the deep link
+                            try:
+                                if sb_status: # Only attempt if Starburst is online
+                                    # Search by name
+                                    results = client.search_products(dp['name'])
+                                    # Find exact match
+                                    remote_product = next((p for p in results if p['name'] == dp['name']), None)
+                                    
+                                    if remote_product:
+                                        pid = remote_product['id']
+                                        # Construct URL: https://<HOST>/ui/insights/dataproduct/product/display/<UUID>
+                                        base_url = client.base_url.rstrip('/')
+                                        product_url = f"{base_url}/ui/insights/dataproduct/product/display/{pid}"
+                                        
+                                        st.markdown(f"[[🌐 Open in Starburst]]({product_url})")
+                            except Exception:
+                                # Silently fail if ID lookup doesn't work (e.g., product not deployed yet)
+                                pass
+                            
+                            st.markdown("**Views & Objects:**")
+                            
+                            # List Views as Items with Popup Button
                             for view in dp['views']:
-                                st.write(f"- `{view['name']}` ({view['type']})")
+                                btn_key = f"view_btn_{domain_name}_{dp['name']}_{view['name']}"
+                                
+                                c1, c2 = st.columns([0.85, 0.15])
+                                with c1:
+                                    st.text(f"• {view['name']}")
+                                with c2:
+                                    if st.button("👁️", key=btn_key, help="See Schema"):
+                                        show_view_details(view)
+
         else:
-            st.warning("No Data Product YAMLs found in data_products/")
+            st.info("No domains found. Start chatting to create one!")
+            
+        st.divider()
+        
+        # --- 3. Cluster Info ---
+        with st.expander("⚙️ Cluster Config", expanded=True):
+            st.markdown(f"**Host:** `{config['SB_HOST']}`")
+            st.markdown(f"**User:** `{config['SB_USER']}`")
+            
+            if config.get('SB_URL') and config['SB_URL'] != 'N/A':
+                st.markdown("---")
+                st.link_button("🚀 Open Starburst Web UI", config['SB_URL'], use_container_width=True)
 
 
-# --- 2. Main Content Renderer ---
+# --- 2. Main Content Renderer (Interactive Hero) ---
 def render_main_content():
-    """Renders the main content area including title and examples."""
-    st.title("🤖 Starburst Data Product Architect")
-    st.subheader("Generate Data Pipelines and Semantic Layers with AI")
-
-    st.markdown("""
-    This tool uses Gemini to generate complete, runnable Python scripts and Starburst Data Product YAML definitions based on your natural language requests.
+    """Renders the main content area with a modern header and interactive quick starts."""
+    
+    # Hero Section
+    st.title("🤖 Data Product Factory")
+    st.markdown("#### *From Idea to Iceberg in Seconds*")
+    
+    st.info("""
+    **AI-Powered Data Engineering:** Describe your business domain, and I will generate:
+    1. 🐍 **Python Scripts** for synthetic data generation (Faker/Pandas).
+    2. 📄 **Data Product YAMLs** for Starburst semantic views.
     """)
 
-    # Example Prompts Section
-    with st.expander("🚀 Click here for Prompt Examples & Instructions", expanded=False):
-        st.markdown("### 💡 Example 1: Flight operations ")
-        st.code(
-            """
-            Create a dataset for airline flight operations with data products for delays and passenger traffic.
-            """
-        )
-        st.markdown("### 💡 Example 2: Supply Chain Logistics")
-        st.code(
-            """
-            Create a Data Product for Supply Chain Logistics. Entities: Shipments, Warehouses, Carriers, Routes. 
-            Goal: Track On-Time Delivery Rate and Average Cost per Mile. 
-            Note: Use the existing project structure.
-            """
-        )
-        st.markdown("### 💡 Example 3: Energy Consumption Monitoring")
-        st.code(
-            """
-            Please generate a complete dataset and two distinct Data Products for Energy Consumption Monitoring in a Smart Grid context.
-            1. The Dataset: Smart Meters, Substations, Meter Readings (high volume), Weather Data, Tariff Plans.
-            2. Data Products:
-               - A: Peak Usage Analysis (v_regional_peak_load, v_high_usage_customers).
-               - B: Consumption Forecasting (mv_daily_usage_trends - with 24h refresh, v_weather_impact_correlation).
-            Constraints: Ensure the domain is set to 'Energy & Utilities'.
-            """
-        )
-    st.markdown("---")
+    # --- Interactive Quick Starts ---
+    st.markdown("### 🚀 Quick Start Templates")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    selected_prompt = None
+
+    with col1:
+        st.markdown("**✈️ Aviation**")
+        st.caption("Flight ops & passenger traffic")
+        if st.button("Load Aviation Demo", use_container_width=True):
+            selected_prompt = "Create a dataset for airline flight operations with data products for delays and passenger traffic."
+
+    with col2:
+        st.markdown("**📦 Logistics**")
+        st.caption("Supply chain & delivery tracking")
+        if st.button("Load Supply Chain Demo", use_container_width=True):
+            selected_prompt = """Create a Data Product for Supply Chain Logistics. 
+Entities: Shipments, Warehouses, Carriers. 
+Goal: Track On-Time Delivery Rate."""
+
+    with col3:
+        st.markdown("**⚡ Energy**")
+        st.caption("Smart grid & consumption")
+        if st.button("Load Energy Demo", use_container_width=True):
+            selected_prompt = """Generate a dataset for Smart Grid Energy Monitoring.
+Entities: Smart Meters, Substations, Readings.
+Data Products: Peak Usage Analysis & Consumption Forecasting.
+Constraints: Ensure the domain is set to 'Energy & Utilities'."""
+
+    return selected_prompt
