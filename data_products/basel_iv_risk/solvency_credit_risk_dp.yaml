@@ -1,0 +1,116 @@
+# basel_iv_risk/solvency_credit_risk_dp.yaml
+name: "Solvency & Credit Risk"
+description: "This data product provides a consolidated view of credit risk exposures and counterparty quality, forming the foundation for regulatory capital calculation under Basel IV. It transforms raw loan and customer data into key metrics like Exposure at Default (EAD) and Risk-Weighted Assets (RWA), enabling business lines to monitor their capital consumption and risk profile in alignment with the new standardized and internal model approaches."
+summary: "Calculates EAD and RWA, and simulates the Basel IV Output Floor."
+domain: "Basel IV Credit Risk"
+catalog: ${BASEL_SOLVENCY_DP_CATALOG}
+schema: ${BASEL_SOLVENCY_DP_SCHEMA}
+owners:
+  - name: "Group Risk Management"
+    email: "risk.management@ca-sa.com"
+
+views:
+  - name: "v_ead_analysis_by_counterparty"
+    description: "Calculates the Exposure at Default (EAD) by applying Basel IV Credit Conversion Factors (CCF) to off-balance sheet commitments. It segments this exposure by counterparty type and provides a more granular Standardised Approach RWA, using external ratings for corporates as a critical indicator for capital monitoring."
+    query: |
+      SELECT
+          c.CustomerID,
+          c.CustomerName,
+          c.CounterpartyType,
+          c.ExternalRating,
+          l.LoanID,
+          l.DrawnAmount + (l.CommitmentAmount - l.DrawnAmount) * l.CCF AS EAD,
+          -- IMPROVED RWA calculation with more granularity
+          (l.DrawnAmount + (l.CommitmentAmount - l.DrawnAmount) * l.CCF) *
+              CASE
+                  WHEN c.CounterpartyType = 'Sovereign' THEN 0.0
+                  WHEN c.CounterpartyType = 'Retail' THEN 0.75
+                  WHEN c.CounterpartyType = 'SME' THEN 0.85
+                  WHEN c.CounterpartyType = 'Corporate' THEN
+                      CASE c.ExternalRating
+                          WHEN 'AAA' THEN 0.2
+                          WHEN 'AA' THEN 0.3
+                          WHEN 'A' THEN 0.5
+                          WHEN 'BBB' THEN 1.0
+                          ELSE 1.5
+                      END
+                  ELSE 1.25
+              END AS RWA_Standard_Approach
+      FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.loans l
+      JOIN ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.customers c ON l.CustomerID = c.CustomerID
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Unique identifier for the counterparty."
+      - name: "CounterpartyType"
+        type: "varchar"
+        description: "Basel IV classification of the counterparty (Corporate, SME, etc.)."
+      - name: "EAD"
+        type: "double"
+        description: "Exposure at Default, calculated after applying CCF to undrawn amounts."
+      - name: "RWA_Standard_Approach"
+        type: "double"
+        description: "Simulated Risk-Weighted Assets using the more granular Standardised Approach."
+
+  - name: "v_capital_floor_impact_simulation"
+    description: "A crucial simulation for Basel IV, this view compares the RWA calculated under the bank's Internal Ratings-Based (IRB) models against the RWA from the Standardised Approach (SA). The 'Capital_Floor_Adjustment' shows where the SA RWA (multiplied by the 72.5% floor factor) exceeds the IRB RWA, indicating a need for additional capital and directly impacting profitability."
+    query: |
+      WITH EAD_Calc AS (
+          SELECT
+              l.LoanID,
+              l.CustomerID,
+              l.LGD,
+              l.DrawnAmount + (l.CommitmentAmount - l.DrawnAmount) * l.CCF AS EAD
+          FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.loans l
+      ),
+      SA_RWA_Calc AS (
+          SELECT
+              c.CustomerID,
+              (e.EAD) *
+                  CASE
+                      WHEN c.CounterpartyType = 'Sovereign' THEN 0.0
+                      WHEN c.CounterpartyType = 'Retail' THEN 0.75
+                      WHEN c.CounterpartyType = 'SME' THEN 0.85
+                      WHEN c.CounterpartyType = 'Corporate' THEN
+                          CASE c.ExternalRating WHEN 'AAA' THEN 0.2 WHEN 'AA' THEN 0.3 WHEN 'A' THEN 0.5 WHEN 'BBB' THEN 1.0 ELSE 1.5 END
+                      ELSE 1.25
+                  END AS RWA_SA
+          FROM EAD_Calc e JOIN ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.customers c ON e.CustomerID = c.CustomerID
+      ),
+      IRB_RWA_Calc AS (
+          -- This is a simplified IRB formula for demonstration
+          SELECT
+              c.CustomerID,
+              (e.EAD * e.LGD * c.PD_Internal * 12.5) AS RWA_IRB
+          FROM EAD_Calc e JOIN ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.customers c ON e.CustomerID = c.CustomerID
+      )
+      SELECT
+          c.CustomerID,
+          c.CustomerName,
+          c.BusinessSegment,
+          SUM(irb.RWA_IRB) AS RWA_IRB_Model,
+          SUM(sa.RWA_SA) AS RWA_Standard_Model,
+          SUM(sa.RWA_SA) * 0.725 AS Capital_Floor_Threshold,
+          GREATEST(0, (SUM(sa.RWA_SA) * 0.725) - SUM(irb.RWA_IRB)) AS Capital_Floor_Adjustment
+      FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.customers c
+      JOIN IRB_RWA_Calc irb ON c.CustomerID = irb.CustomerID
+      JOIN SA_RWA_Calc sa ON c.CustomerID = sa.CustomerID
+      GROUP BY 1, 2, 3
+      HAVING SUM(irb.RWA_IRB) > 0
+      ORDER BY Capital_Floor_Adjustment DESC
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Unique identifier for the counterparty."
+      - name: "BusinessSegment"
+        type: "varchar"
+        description: "The internal business line associated with the customer."
+      - name: "RWA_IRB_Model"
+        type: "double"
+        description: "Total RWA for the customer calculated using internal models."
+      - name: "RWA_Standard_Model"
+        type: "double"
+        description: "Total RWA for the customer calculated using the standardised approach."
+      - name: "Capital_Floor_Adjustment"
+        type: "double"
+        description: "The additional RWA required to meet the 72.5% output floor. A non-zero value indicates the floor is binding."

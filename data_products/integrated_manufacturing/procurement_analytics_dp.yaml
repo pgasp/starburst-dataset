@@ -1,0 +1,101 @@
+# integrated_manufacturing/procurement_analytics_dp.yaml
+# --- SCM & PROCUREMENT ANALYTICS DATA PRODUCT ---
+name: "Manufacturing Procurement & Supplier Analytics"
+description: |
+  This data product provides key insights into supplier performance by analyzing component quality from QMS and tracking lead times from SCM. It helps procurement teams optimize sourcing and manage supply chain risks effectively.
+
+  **Key Objectives:**
+  - **Optimize Sourcing Decisions:** Identify the most reliable and highest-quality suppliers based on empirical data.
+  - **Mitigate Supply Chain Risk:** Flag suppliers with inconsistent lead times or declining quality trends.
+  - **Improve Supplier Accountability:** Use performance scorecards in contract negotiations and reviews.
+
+  **Business Questions Answered:**
+  1. Which suppliers consistently provide components with the lowest defect rates?
+  2. What is the actual average delivery lead time for a supplier, and how does it compare to their contract?
+  3. Can I get a scorecard to rank our suppliers based on both quality and delivery reliability?
+summary: "Views for Supplier Quality Scorecards and Lead Time Analysis"
+
+# DATA PRODUCT DESTINATION (Schema 4: Procurement)
+domain: "Integrated Manufacturing"
+catalog: ${MANUF_PROCUREMENT_DP_CATALOG}
+schema: ${MANUF_PROCUREMENT_DP_SCHEMA}
+
+owners:
+  - name: "Procurement & SCM"
+    email: "pascal.gasp@starburstdata.com"
+
+tags:
+  - "Procurement"
+  - "SCM"
+  - "Supplier Management"
+  - "Scorecard"
+  - "Lead Time"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Supplier Quality Scorecard (QMS Federation)
+  - name: "v_supplier_quality_scorecard"
+    description: "Aggregates QMS inspection data to calculate a defect rate for each supplier. This scorecard is crucial for supplier negotiations and identifying partners who consistently meet quality standards, directly linking procurement decisions to manufacturing outcomes."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          SupplierSource AS Supplier,
+          COUNT(*) AS TotalInspections,
+          SUM(CASE WHEN Result = 'FAIL' THEN 1 ELSE 0 END) AS TotalFailures,
+          CAST(SUM(CASE WHEN Result = 'FAIL' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*) AS FailureRate_Pct
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.qms_inspection_records
+      WHERE SupplierSource IS NOT NULL
+      GROUP BY 1
+      HAVING COUNT(*) > 10
+      ORDER BY FailureRate_Pct DESC
+      
+    columns:
+      - name: "Supplier"
+        type: "varchar"
+        description: "The name of the company that supplied the component."
+      - name: "TotalInspections"
+        type: "bigint"
+        description: "Total number of components from this supplier that were inspected."
+      - name: "TotalFailures"
+        type: "bigint"
+        description: "Total number of components from this supplier that failed inspection."
+      - name: "FailureRate_Pct"
+        type: "double"
+        description: "The percentage of inspected parts from this supplier that were defective."
+
+  # 2. Supplier Lead Time Performance (SCM)
+  - name: "v_supplier_lead_time_performance"
+    description: "Analyzes historical invoice data to determine the average and maximum delivery lead time for each supplier. This helps forecast material availability, manage inventory levels, and assess supplier reliability against their stated service-level agreements."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          Supplier,
+          AVG(DeliveryLeadTime_Days) AS AvgLeadTime_Days,
+          MAX(DeliveryLeadTime_Days) AS MaxLeadTime_Days,
+          MIN(DeliveryLeadTime_Days) AS MinLeadTime_Days,
+          COUNT(DISTINCT InvoiceID) AS TotalOrders
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.scm_supplier_invoices
+      GROUP BY 1
+      ORDER BY AvgLeadTime_Days DESC
+      
+    columns:
+      - name: "Supplier"
+        type: "varchar"
+        description: "The name of the supplying company."
+      - name: "AvgLeadTime_Days"
+        type: "double"
+        description: "The average number of days between order and delivery."
+      - name: "MaxLeadTime_Days"
+        type: "integer"
+        description: "The longest observed lead time, indicating potential delivery volatility."
+      - name: "MinLeadTime_Days"
+        type: "integer"
+        description: "The shortest observed lead time for this supplier."
+      - name: "TotalOrders"
+        type: "bigint"
+        description: "Total number of distinct purchase orders from this supplier."

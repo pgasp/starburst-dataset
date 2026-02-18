@@ -1,0 +1,63 @@
+# cib_esg/sustainable_finance_tracker_dp.yaml
+name: "CIB Sustainable Finance Tracker"
+description: "This data product serves the revenue generation and business development teams by tracking and aggregating all sustainable finance activities. It provides a clear, quantifiable measure of the bank's performance in issuing green bonds, sustainability-linked loans, and other ESG-focused financial products, helping to report on business targets and showcase market leadership."
+summary: "Tracks volume of Green Bonds and Sustainability-Linked Loans."
+domain: "CIB ESG"
+catalog: ${CIB_ESG_REVENUE_DP_CATALOG}
+schema: ${CIB_ESG_REVENUE_DP_SCHEMA}
+owners:
+  - name: "Sustainable Finance Group"
+    email: "sfg@cib.com"
+
+views:
+  - name: "v_sustainable_finance_volume_by_type"
+    description: "Aggregates the total value and count of sustainable finance deals, such as 'Green Bonds' and 'Sustainability-Linked Loans', grouped by type and year. This helps track progress against annual revenue goals for the business line."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          YEAR(close_date) as deal_year,
+          deal_type,
+          SUM(deal_value_usd) as total_volume_usd,
+          COUNT(deal_id) as deal_count
+      FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.deals_master
+      WHERE deal_type IN ('Green Bond', 'Sustainability-Linked Loan', 'Social Bond')
+      GROUP BY 1, 2
+      ORDER BY 1 DESC, 3 DESC
+    columns:
+      - name: "deal_year"
+        type: "bigint"
+        description: "The calendar year in which the deals were closed."
+      - name: "deal_type"
+        type: "varchar"
+        description: "The category of the sustainable finance product, e.g., 'Green Bond'."
+      - name: "total_volume_usd"
+        type: "bigint"
+        description: "The sum of deal values in USD for that year and type."
+      - name: "deal_count"
+        type: "bigint"
+        description: "The total number of deals for that year and type."
+
+  - name: "v_top_clients_by_green_financing"
+    description: "Ranks clients based on the total volume of sustainable financing they have undertaken with the bank. This view is crucial for identifying key partners in the green transition and fostering deeper relationships with top-tier clients."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          c.client_name,
+          c.industry_sector,
+          SUM(d.deal_value_usd) as total_sustainable_finance_volume
+      FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.deals_master d
+      JOIN ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.clients_master c ON d.client_id = c.client_id
+      WHERE d.deal_type IN ('Green Bond', 'Sustainability-Linked Loan', 'Social Bond')
+      GROUP BY 1, 2
+      ORDER BY 3 DESC
+      LIMIT 100
+    columns:
+      - name: "client_name"
+        type: "varchar"
+        description: "The legal name of the corporate client."
+      - name: "industry_sector"
+        type: "varchar"
+        description: "The primary industry sector of the client."
+      - name: "total_sustainable_finance_volume"
+        type: "bigint"
+        description: "Total value in USD of all sustainable finance deals done with this client."

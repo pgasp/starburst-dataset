@@ -1,0 +1,102 @@
+# --- FEDERATED STRESS TESTING SEMANTIC LAYER ---
+name: "Federated Stress Test Simulations"
+description: "This Data Product provides powerful, forward-looking risk simulations by applying predefined economic stress scenarios to the bank's current credit and market risk portfolios. It federates data from loan books, trading positions, and scenario definitions to quantify potential losses and impacts, enabling proactive risk management and regulatory compliance reporting."
+summary: "Simulated P&L and Credit Loss under Economic Stress"
+
+# DATA PRODUCT DESTINATION (Pulls from your .env variables)
+domain: "Risk & Stress Test"
+catalog: ${RISK_DP_CATALOG}
+schema: ${RISK_STRESS_TEST_DP_SCHEMA}
+
+owners:
+  - name: "Enterprise Risk Management"
+    email: "enterprise-risk@bank.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Stressed Credit Portfolio Impact
+  - name: "v_stressed_credit_portfolio_impact"
+    description: "Simulates the impact of economic stress on the loan portfolio by applying scenario-specific shocks to the Probability of Default (PD). It calculates the stressed PD and the resulting increase in Expected Loss, helping to identify vulnerabilities within different loan segments under adverse conditions."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT 
+          s.ScenarioName,
+          l.LoanType,
+          l.RiskGrade,
+          SUM(l.PrincipalAmount) AS TotalPrincipal,
+          -- Base Expected Loss
+          SUM(l.PrincipalAmount * l.PD_Score) AS BaseExpectedLoss,
+          -- Stressed Expected Loss Calculation
+          SUM(
+              l.PrincipalAmount * 
+              -- Apply a stress multiplier based on the interest rate shock
+              (l.PD_Score * (1.0 + (CAST(s.Impact_IR_Shift_bps AS DOUBLE) / 500.0)))
+          ) AS StressedExpectedLoss,
+          -- Incremental Loss
+          SUM(l.PrincipalAmount * (l.PD_Score * (1.0 + (CAST(s.Impact_IR_Shift_bps AS DOUBLE) / 500.0)))) - SUM(l.PrincipalAmount * l.PD_Score) AS IncrementalLoss
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.loan_portfolios l
+      CROSS JOIN ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.stress_scenarios s
+      WHERE s.Impact_IR_Shift_bps > 0 -- Only apply relevant interest rate scenarios
+      GROUP BY 1, 2, 3
+      ORDER BY IncrementalLoss DESC
+
+    columns:
+      - name: "ScenarioName"
+        type: "varchar"
+        description: "The economic stress scenario being applied."
+      - name: "LoanType"
+        type: "varchar"
+        description: "The type of credit product being analyzed."
+      - name: "BaseExpectedLoss"
+        type: "double"
+        description: "The calculated Expected Loss based on current PD scores."
+      - name: "StressedExpectedLoss"
+        type: "double"
+        description: "The calculated Expected Loss after applying the scenario shock to PD scores."
+      - name: "IncrementalLoss"
+        type: "double"
+        description: "The additional potential loss attributed to the stress scenario."
+
+  # 2. Stressed Equity P&L Simulation
+  - name: "v_stressed_equity_pnl_simulation"
+    description: "Calculates the potential Profit and Loss (P&L) for the equity trading book under various market crash scenarios. This view directly applies the equity shock percentage from each scenario to the notional value of each position, providing a clear financial impact assessment for market risk managers."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          s.ScenarioID,
+          s.ScenarioName,
+          p.PositionID,
+          p.InstrumentID,
+          p.CounterpartyID,
+          p.NotionalValue,
+          s.Impact_Equity_Pct,
+          (p.NotionalValue * s.Impact_Equity_Pct) AS SimulatedPnL
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.trading_positions p
+      CROSS JOIN ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.stress_scenarios s
+      WHERE p.AssetClass = 'Equity' AND s.Impact_Equity_Pct < 0
+      ORDER BY SimulatedPnL ASC
+
+    columns:
+      - name: "ScenarioName"
+        type: "varchar"
+        description: "The market shock scenario being applied."
+      - name: "PositionID"
+        type: "varchar"
+        description: "The unique identifier for the trading position."
+      - name: "CounterpartyID"
+        type: "varchar"
+        description: "The counterparty associated with the trade."
+      - name: "NotionalValue"
+        type: "double"
+        description: "The current market value of the position."
+      - name: "Impact_Equity_Pct"
+        type: "double"
+        description: "The percentage shock applied from the scenario."
+      - name: "SimulatedPnL"
+        type: "double"
+        description: "The simulated Profit or Loss under the given scenario."

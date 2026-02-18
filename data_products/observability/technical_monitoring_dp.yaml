@@ -1,0 +1,98 @@
+name: "Technical Stack Health"
+description: "Provides correlated views across application, compute, data, and network layers to enable root cause analysis and performance monitoring for engineering teams. This product is the primary tool for SREs and developers to diagnose incidents, understand system interdependencies, and ensure the reliability and performance of the entire technical infrastructure."
+summary: "Views for root cause analysis, infrastructure health, and system correlation."
+
+# Data Product Destination
+domain: "Observability"
+catalog: ${OBS_TECH_DP_CATALOG}
+schema: ${OBS_TECH_DP_SCHEMA}
+
+owners:
+  - name: "Site Reliability Engineering"
+    email: "sre-team@example.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  # 1. Granular Root Cause Analysis (App to Compute)
+  - name: "v_root_cause_app_compute_correlation"
+    description: "Finds specific application errors that occurred within a 1-minute window of high CPU or memory utilization on the same server, providing direct evidence for root cause analysis. This helps engineers quickly pinpoint infrastructure resource contention as the source of application failures."
+    security_mode: "INVOKER"
+
+    query: |
+      SELECT
+          at.trace_id,
+          at."timestamp" as error_timestamp,
+          at.service_name,
+          at.http_status,
+          at.error_message,
+          cm.server_hostname,
+          cm.cpu_utilization_pct,
+          cm.memory_utilization_pct
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces AS at
+      JOIN ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.compute_metrics AS cm
+        ON at.server_hostname = cm.server_hostname
+       AND CAST(cm."timestamp" AS TIMESTAMP) BETWEEN (CAST(at."timestamp" AS TIMESTAMP) - INTERVAL '1' MINUTE) AND (CAST(at."timestamp" AS TIMESTAMP) + INTERVAL '1' MINUTE)
+      WHERE at.http_status >= 500
+        AND (cm.cpu_utilization_pct > 90.0 OR cm.memory_utilization_pct > 90.0)
+      ORDER BY at."timestamp" DESC
+
+    columns:
+      - name: "trace_id"
+        type: "varchar"
+        description: "The unique identifier of the failed application request."
+      - name: "server_hostname"
+        type: "varchar"
+        description: "The server where both the app error and the resource spike occurred."
+
+  # 2. Real-time Component Health Status
+  - name: "v_current_component_health_status"
+    description: "Provides a near real-time snapshot of the health of critical system components based on the latest metrics within a 15-minute window. This is designed for live dashboards used by network operations centers (NOCs) to monitor the immediate state of the system."
+    security_mode: "INVOKER"
+    
+    query: |
+      SELECT 'COMPUTE' AS layer, 
+             server_hostname AS component, 
+             CASE 
+                WHEN AVG(cpu_utilization_pct) > 90 OR AVG(memory_utilization_pct) > 90 THEN 'CRITICAL' 
+                ELSE 'HEALTHY' 
+             END AS status, 
+             MAX(CAST("timestamp" AS TIMESTAMP)) AS last_seen 
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.compute_metrics 
+      WHERE CAST("timestamp" AS TIMESTAMP) > NOW() - INTERVAL '15' MINUTE 
+      GROUP BY 1, 2
+      
+      UNION ALL
+      
+      SELECT 'DATABASE' AS layer, 
+             database_name AS component, 
+             CASE 
+                WHEN AVG(lock_wait_ms) > 100 THEN 'DEGRADED' 
+                ELSE 'HEALTHY' 
+             END AS status, 
+             MAX(CAST("timestamp" AS TIMESTAMP)) AS last_seen 
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.db_query_logs 
+      WHERE CAST("timestamp" AS TIMESTAMP) > NOW() - INTERVAL '15' MINUTE 
+      GROUP BY 1, 2
+
+      UNION ALL
+      
+      SELECT 'NETWORK' AS layer, 
+             device_id AS component, 
+             MAX_BY(health_status, CAST("timestamp" AS TIMESTAMP)) AS status,
+             MAX(CAST("timestamp" AS TIMESTAMP)) AS last_seen 
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.network_device_health 
+      WHERE CAST("timestamp" AS TIMESTAMP) > NOW() - INTERVAL '15' MINUTE 
+      GROUP BY 1, 2
+      
+    columns:
+      - name: "layer"
+        type: "varchar"
+        description: "The part of the tech stack (e.g., COMPUTE, DATABASE)."
+      - name: "component"
+        type: "varchar"
+        description: "The specific component being monitored (e.g., a hostname or database name)."
+      - name: "status"
+        type: "varchar"
+        description: "The calculated health status (e.g., HEALTHY, DEGRADED, CRITICAL)."

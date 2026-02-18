@@ -1,0 +1,102 @@
+name: "FinOps & Cost Optimization"
+description: "Integrates technical performance data with cloud billing information to provide actionable insights for managing and optimizing infrastructure costs. This data product bridges the gap between engineering and finance, enabling teams to make data-driven decisions that improve efficiency, reduce waste, and directly impact the company's bottom line by maximizing the value of cloud spend."
+summary: "Views for identifying cloud waste and analyzing cost per transaction."
+
+# Data Product Destination
+domain: "Observability"
+catalog: ${OBS_FINOPS_DP_CATALOG}
+schema: ${OBS_FINOPS_DP_SCHEMA}
+
+owners:
+  - name: "FinOps & Cloud Center of Excellence"
+    email: "finops-cce@example.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  - name: "v_underutilized_compute_resources"
+    description: "Identifies chronically underutilized servers by calculating average CPU and memory usage over the last 30 days. It joins this with billing data to quantify the monthly cost of wasted resources, providing a clear action list for right-sizing or decommissioning servers."
+    security_mode: "INVOKER"
+    
+    query: |
+      WITH ComputeAverages AS (
+          SELECT
+              server_hostname,
+              AVG(cpu_utilization_pct) as avg_cpu_pct,
+              AVG(memory_utilization_pct) as avg_mem_pct
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.compute_metrics
+          WHERE CAST("timestamp" AS TIMESTAMP) >= NOW() - INTERVAL '30' DAY
+          GROUP BY 1
+      ),
+      MonthlyCosts AS (
+          SELECT
+              resource_id,
+              SUM(cost_usd) as total_monthly_cost
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.cloud_billing_data
+          WHERE usage_date >= (CURRENT_DATE - INTERVAL '30' DAY)
+          GROUP BY 1
+      )
+      SELECT
+          ca.server_hostname,
+          ca.avg_cpu_pct,
+          ca.avg_mem_pct,
+          mc.total_monthly_cost
+      FROM ComputeAverages ca
+      JOIN MonthlyCosts mc ON ca.server_hostname = mc.resource_id
+      WHERE ca.avg_cpu_pct < 20.0 AND ca.avg_mem_pct < 30.0
+      ORDER BY mc.total_monthly_cost DESC
+
+    columns:
+      - name: "server_hostname"
+        type: "varchar"
+        description: "The hostname of the underutilized server."
+      - name: "avg_cpu_pct"
+        type: "double"
+        description: "Average CPU utilization over the last 30 days."
+      - name: "total_monthly_cost"
+        type: "double"
+        description: "The total cost of this resource over the last 30 days."
+
+  - name: "v_service_cost_and_efficiency"
+    description: "Calculates the infrastructure cost per one million transactions for each microservice. This metric helps to normalize costs and directly compare the financial efficiency of different services, highlighting areas where architectural improvements could yield significant savings or justify higher spend."
+    security_mode: "INVOKER"
+    
+    query: |
+      WITH ServerMonthlyCost AS (
+          SELECT
+              resource_id AS server_hostname,
+              SUM(cost_usd) AS total_cost
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.cloud_billing_data
+          WHERE usage_date >= (CURRENT_DATE - INTERVAL '30' DAY)
+          GROUP BY 1
+      ),
+      ServiceTraffic AS (
+          SELECT
+              service_name,
+              server_hostname,
+              COUNT(*) AS request_count
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces
+          WHERE CAST("timestamp" AS TIMESTAMP) >= NOW() - INTERVAL '30' DAY
+          GROUP BY 1, 2
+      )
+      SELECT
+          st.service_name,
+          SUM(sc.total_cost) AS total_service_cost,
+          SUM(st.request_count) AS total_requests,
+          (SUM(sc.total_cost) / SUM(st.request_count)) * 1000000 AS cost_per_million_requests
+      FROM ServiceTraffic st
+      JOIN ServerMonthlyCost sc ON st.server_hostname = sc.server_hostname
+      GROUP BY 1
+      ORDER BY cost_per_million_requests DESC
+
+    columns:
+      - name: "service_name"
+        type: "varchar"
+        description: "The name of the microservice."
+      - name: "total_service_cost"
+        type: "double"
+        description: "Total 30-day infrastructure cost for all servers running this service."
+      - name: "cost_per_million_requests"
+        type: "double"
+        description: "A normalized cost efficiency metric for the service."

@@ -1,0 +1,97 @@
+# customer_energy_consumption/consumption_analysis_dp.yaml
+name: "Analyse de Consommation Énergétique"
+description: |
+  Ce produit de données fournit des outils analytiques pour disséquer les habitudes de consommation d'énergie. Il permet de distinguer la consommation en Heures Pleines et en Heures Creuses, d'identifier les pics de consommation journaliers pour chaque client, et de suivre les tendances globales. Ces informations sont vitales pour la gestion de la charge du réseau, la tarification dynamique, les recommandations d'économies d'énergie aux clients et la validation de la facturation des contrats spécifiques.
+
+  **Exemples de questions métier :**
+
+  *   **Optimisation des Offres :** "Comment optimiser nos offres 'Heures Creuses' ? Quels clients avec ce contrat sous-utilisent cette période et pourraient bénéficier d'une campagne de communication ciblée ?"
+      *   **Réponse :** En utilisant `v_consumption_by_tariff_period`, nous pouvons calculer le ratio de consommation en Heures Creuses par rapport au total. Cela nous permet d'identifier les clients qui n'utilisent pas cette option pour leur envoyer des conseils personnalisés et ainsi augmenter leur satisfaction et leur fidélité.
+
+  *   **Anticipation de la Charge Réseau :** "Pour anticiper la charge sur le réseau, quels sont les comptes clients qui ont enregistré les plus grands pics de consommation journaliers au cours du dernier mois ?"
+      *   **Réponse :** La vue `v_daily_peak_consumption` a été créée pour ce besoin. En filtrant sur le dernier mois et en triant par la consommation la plus élevée, nous pouvons immédiatement isoler les comptes qui ont le plus d'impact sur le réseau, sans analyser des millions de relevés bruts.
+summary: "Vues pour l'analyse des pics et de la consommation Heures Pleines/Creuses."
+
+domain: "Customer Energy Consumption"
+catalog: ${ENERGY_ANALYSIS_DP_CATALOG}
+schema: ${ENERGY_ANALYSIS_DP_SCHEMA}
+
+owners:
+  - name: "Analystes de Données & Gestion de Réseau"
+    email: "grid_analysis@edf-demo.com"
+
+tags:
+  - "Consommation"
+  - "Heures Creuses"
+  - "Pic de charge"
+  - "Analyse"
+
+views:
+  - name: "v_consumption_by_tariff_period"
+    description: "Agrège la consommation totale et moyenne par compte et par période tarifaire (Heures Pleines / Heures Creuses). Cette vue est essentielle pour comprendre la répartition de la consommation d'un client, optimiser les offres commerciales et conseiller les clients sur la manière de déplacer leur consommation pour réduire leurs factures."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        AccountID,
+        TariffPeriod,
+        SUM(Consumption_kWh) as TotalConsumption_kWh,
+        AVG(Consumption_kWh) as AverageHourlyConsumption_kWh,
+        COUNT(*) as ReadingCount
+      FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.smart_meter_readings
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+    columns:
+      - name: "AccountID"
+        type: "varchar"
+        description: "Identifiant unique du compte de facturation du client."
+      - name: "TariffPeriod"
+        type: "varchar"
+        description: "Période tarifaire: 'Heures Pleines' ou 'Heures Creuses'."
+      - name: "TotalConsumption_kWh"
+        type: "double"
+        description: "Consommation totale en kWh pour la période donnée."
+      - name: "AverageHourlyConsumption_kWh"
+        type: "double"
+        description: "Consommation horaire moyenne en kWh pour la période."
+      - name: "ReadingCount"
+        type: "bigint"
+        description: "Nombre de relevés de compteur dans cette période."
+
+  - name: "v_daily_peak_consumption"
+    description: "Identifie pour chaque compte le relevé de consommation le plus élevé de chaque journée. Le suivi des pics est crucial pour la gestion de l'équilibre du réseau électrique et permet d'identifier les clients ayant des besoins en puissance très élevés à des moments spécifiques."
+    security_mode: "INVOKER"
+    query: |
+      WITH RankedConsumption AS (
+        SELECT
+          AccountID,
+          CAST(Timestamp AS TIMESTAMP) as ReadingTimestamp,
+          Consumption_kWh,
+          TariffPeriod,
+          ROW_NUMBER() OVER(PARTITION BY AccountID, DATE(CAST(Timestamp AS TIMESTAMP)) ORDER BY Consumption_kWh DESC) as rn
+        FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.smart_meter_readings
+      )
+      SELECT
+        AccountID,
+        DATE(ReadingTimestamp) as PeakDay,
+        ReadingTimestamp as PeakTimestamp,
+        Consumption_kWh as PeakConsumption_kWh,
+        TariffPeriod
+      FROM RankedConsumption
+      WHERE rn = 1
+      ORDER BY PeakDay DESC, AccountID
+    columns:
+      - name: "AccountID"
+        type: "varchar"
+        description: "Identifiant unique du compte de facturation."
+      - name: "PeakDay"
+        type: "date"
+        description: "Le jour où le pic de consommation a été enregistré."
+      - name: "PeakTimestamp"
+        type: "timestamp(3) with time zone"
+        description: "L'heure exacte du pic de consommation."
+      - name: "PeakConsumption_kWh"
+        type: "double"
+        description: "La valeur du pic de consommation en kWh."
+      - name: "TariffPeriod"
+        type: "varchar"
+        description: "Indique si le pic a eu lieu en Heures Pleines ou Creuses."

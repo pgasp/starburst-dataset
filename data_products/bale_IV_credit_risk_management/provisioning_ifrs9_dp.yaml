@@ -1,0 +1,64 @@
+# --- PROVISIONNEMENT PRUDENTIEL & IFRS9 BÂLE IV ---
+name: "Provisionnement Prudentiel & IFRS9 Bâle IV"
+description: "Ce Data Product assure la convergence entre la vision comptable (IFRS9) et la vision prudentielle (Bâle IV) du risque de crédit. Il compare les provisions pour Pertes de Crédit Attendues (ECL) avec les Pertes Attendues (EL) réglementaires, permettant d'identifier les écarts et de piloter le coût du risque de manière proactive, notamment sur les portefeuilles en dégradation (Stage 2/3)."
+summary: "Vues pour l'analyse des écarts de provisionnement et le suivi du coût du risque."
+
+domain: "BALE IV"
+catalog: ${RISK_PROVISIONING_DP_CATALOG}
+schema: ${RISK_PROVISIONING_DP_SCHEMA}
+
+owners:
+  - name: "Direction Financière & Risques"
+    email: "finance.risk@casa.com"
+
+views:
+  - name: "v_provisioning_gap_analysis"
+    description: "Compare le stock de provisions comptables (ECL) à la perte attendue prudentielle (EL = EAD * PD * LGD). Cette vue met en évidence les potentiels déficits ou excédents de provisionnement par exposition, aidant à challenger les modèles et à anticiper les ajustements réglementaires."
+    query: |
+      SELECT
+          p.exposure_id,
+          p.ifrs9_stage,
+          p.ecl_expected_credit_loss_eur AS ecl_provision_ifrs9,
+          (e.gross_exposure_eur * e.ccf_credit_conversion_factor * e.pd_probability_of_default * e.lgd_loss_given_default) AS el_prudential,
+          p.ecl_expected_credit_loss_eur - (e.gross_exposure_eur * e.ccf_credit_conversion_factor * e.pd_probability_of_default * e.lgd_loss_given_default) AS provisioning_gap
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_provisions_ifrs9 p
+      JOIN ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_expositions e ON p.exposure_id = e.exposure_id
+      WHERE p.ifrs9_stage IN (2, 3)
+    columns:
+      - name: "exposure_id"
+        type: "varchar"
+        description: "Identifiant unique de l'exposition."
+      - name: "ifrs9_stage"
+        type: "integer"
+        description: "Stade de dépréciation IFRS9 (1, 2, ou 3)."
+      - name: "ecl_provision_ifrs9"
+        type: "double"
+        description: "Provision comptable pour perte de crédit attendue."
+      - name: "el_prudential"
+        type: "double"
+        description: "Perte attendue calculée selon les paramètres prudentiels."
+      - name: "provisioning_gap"
+        type: "double"
+        description: "Écart entre la provision comptable et la perte attendue prudentielle."
+
+  - name: "v_cost_of_risk_by_stage"
+    description: "Agrège le montant total des provisions et le nombre d'expositions par stade IFRS9. Cette vue de synthèse est un indicateur clé de performance (KPI) pour le suivi de la dégradation du portefeuille de crédit et l'évolution du coût du risque global de la banque."
+    query: |
+      SELECT
+          ifrs9_stage,
+          COUNT(DISTINCT exposure_id) AS number_of_exposures,
+          SUM(ecl_expected_credit_loss_eur) AS total_provisions_eur,
+          AVG(ecl_expected_credit_loss_eur) AS average_provision_per_exposure
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_provisions_ifrs9
+      GROUP BY 1
+      ORDER BY 1
+    columns:
+      - name: "ifrs9_stage"
+        type: "integer"
+        description: "Stade de dépréciation IFRS9 (1, 2, ou 3)."
+      - name: "number_of_exposures"
+        type: "bigint"
+        description: "Nombre de dossiers de crédit dans ce stade."
+      - name: "total_provisions_eur"
+        type: "double"
+        description: "Stock total de provisions pour ce stade."

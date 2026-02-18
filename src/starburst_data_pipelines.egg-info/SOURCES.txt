@@ -6,6 +6,7 @@ src/shared_tools/dp_utils.py
 src/shared_tools/env_utils.py
 src/shared_tools/lakehouse_utils.py
 src/shared_tools/llm_utils.py
+src/shared_tools/starburst_client.py
 src/starburst_data_pipelines.egg-info/PKG-INFO
 src/starburst_data_pipelines.egg-info/SOURCES.txt
 src/starburst_data_pipelines.egg-info/dependency_links.txt

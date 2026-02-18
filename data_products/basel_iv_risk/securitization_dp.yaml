@@ -1,0 +1,70 @@
+# basel_iv_risk/securitization_dp.yaml
+name: "Securitization & Tranches"
+description: "Provides specialized insights for structured finance and capital markets activities under the revised Basel IV securitization framework. This data product analyzes the bank's retained risk across different tranches (Junior, Mezzanine, Senior) of securitization deals. It is essential for monitoring capital impact, ensuring compliance with the output floor, and assessing the performance and risk profile of structured credit positions."
+summary: "Analyzes risk retention and capital impact of securitization tranches."
+domain: "Basel IV Credit Risk"
+catalog: ${BASEL_SECURITIZATION_DP_CATALOG}
+schema: ${BASEL_SECURITIZATION_DP_SCHEMA}
+owners:
+  - name: "Capital Markets & Structured Finance"
+    email: "cap.markets@ca-sa.com"
+
+views:
+  - name: "v_securitization_tranche_performance"
+    description: "Details the bank's retained exposure in securitization deals, broken down by tranche. It shows the retained amount and the corresponding risk weight under the Standardised Approach (SA), which is critical for calculating the RWA and ensuring adherence to Basel IV capital requirements for securitized assets."
+    query: |
+      SELECT
+          PositionID,
+          DealName,
+          TrancheType,
+          RetainedAmount,
+          RiskWeight_SA,
+          RetainedAmount * RiskWeight_SA AS RWA_Securitization
+      FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.securitization_positions
+      ORDER BY DealName,
+          CASE TrancheType
+              WHEN 'Senior' THEN 1
+              WHEN 'Mezzanine' THEN 2
+              WHEN 'Junior' THEN 3
+          END
+    columns:
+      - name: "PositionID"
+        type: "varchar"
+        description: "Unique identifier for the securitization position."
+      - name: "DealName"
+        type: "varchar"
+        description: "The name of the securitization deal."
+      - name: "TrancheType"
+        type: "varchar"
+        description: "The seniority of the tranche (Senior, Mezzanine, Junior)."
+      - name: "RetainedAmount"
+        type: "double"
+        description: "The nominal amount of the position retained by the bank."
+      - name: "RWA_Securitization"
+        type: "double"
+        description: "Risk-Weighted Assets calculated for this securitization position."
+
+  - name: "v_securitization_deal_summary"
+    description: "Aggregates the total retained exposure and the weighted average risk weight for each securitization deal. This provides a high-level overview of the bank's overall risk appetite and capital allocation per deal, facilitating portfolio-level analysis and strategic decision-making in structured finance."
+    query: |
+      SELECT
+          DealName,
+          SUM(RetainedAmount) AS TotalRetainedExposure,
+          SUM(RetainedAmount * RiskWeight_SA) AS Total_RWA,
+          SUM(RetainedAmount * RiskWeight_SA) / SUM(RetainedAmount) AS WeightedAvgRiskWeight
+      FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.securitization_positions
+      GROUP BY DealName
+      ORDER BY Total_RWA DESC
+    columns:
+      - name: "DealName"
+        type: "varchar"
+        description: "The name of the securitization deal."
+      - name: "TotalRetainedExposure"
+        type: "double"
+        description: "Total nominal amount retained by the bank across all tranches in the deal."
+      - name: "Total_RWA"
+        type: "double"
+        description: "Total Risk-Weighted Assets for the entire deal."
+      - name: "WeightedAvgRiskWeight"
+        type: "double"
+        description: "The weighted average risk weight of the bank's total exposure in the deal."

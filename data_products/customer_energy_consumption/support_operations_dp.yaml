@@ -1,0 +1,68 @@
+# customer_energy_consumption/support_operations_dp.yaml
+name: "Analyse des Opérations de Support Client"
+description: "Ce produit de données se concentre sur la performance et l'efficacité des opérations de support client. Il fournit des vues analytiques pour quantifier les types d'interventions, suivre les statuts de résolution en temps réel et identifier les problèmes récurrents. En fédérant ces données avec les informations contractuelles des clients, il permet de découvrir si certains produits ou services génèrent plus de demandes de support, offrant ainsi des informations précieuses pour l'amélioration des processus et des produits.
+
+**Exemples de questions métier :**
+- Quels sont les motifs de contact les plus fréquents au support et quel est notre volume de tickets ouverts ?
+- Est-ce que certains de nos types de contrats génèrent un nombre disproportionné de demandes de support ?"
+summary: "Vues pour le suivi des interventions de support et l'analyse des motifs de contact."
+
+domain: "Customer Energy Consumption"
+catalog: ${ENERGY_SUPPORT_DP_CATALOG}
+schema: ${ENERGY_SUPPORT_DP_SCHEMA}
+
+owners:
+  - name: "Support & Opérations"
+    email: "support_ops@edf-demo.com"
+
+tags:
+  - "Support"
+  - "Opérations"
+  - "Performance"
+  - "Tickets"
+
+views:
+  - name: "v_support_intervention_summary"
+    description: "Fournit une vue agrégée des interventions de support, ventilées par type et par statut actuel. Cette vue aide les responsables opérationnels à identifier rapidement les problèmes les plus fréquents (par exemple, 'Problème Technique') et à suivre le volume de tickets ouverts, ce qui est essentiel pour l'allocation des ressources et l'amélioration continue des processus de support."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        InterventionType,
+        Status,
+        COUNT(*) as InterventionCount
+      FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.support_interventions
+      GROUP BY 1, 2
+      ORDER BY 3 DESC
+    columns:
+      - name: "InterventionType"
+        type: "varchar"
+        description: "La catégorie de la demande de support (ex: 'Question sur la Facturation')."
+      - name: "Status"
+        type: "varchar"
+        description: "Le statut actuel du ticket de support (ex: 'Ouvert', 'Clôturé')."
+      - name: "InterventionCount"
+        type: "bigint"
+        description: "Le nombre total d'interventions pour cette combinaison de type et de statut."
+
+  - name: "v_interventions_by_contract_type"
+    description: "Cette vue fédérée relie les interventions de support aux détails des contrats clients pour révéler si certains types de contrats génèrent un nombre disproportionné de demandes de support. L'analyse de cette corrélation peut mettre en évidence des problèmes avec des offres de produits spécifiques ou des modèles de facturation, orientant ainsi les décisions commerciales vers une simplification des produits ou une meilleure communication client."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        b.ContractType,
+        s.InterventionType,
+        COUNT(s.InterventionID) as TicketCount
+      FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.support_interventions s
+      JOIN ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.billing_accounts b ON s.AccountID = b.AccountID
+      GROUP BY 1, 2
+      ORDER BY 3 DESC
+    columns:
+      - name: "ContractType"
+        type: "varchar"
+        description: "Le type de contrat associé au compte ayant soumis le ticket."
+      - name: "InterventionType"
+        type: "varchar"
+        description: "La catégorie de la demande de support."
+      - name: "TicketCount"
+        type: "bigint"
+        description: "Nombre total de tickets pour cette combinaison de contrat et de type d'intervention."

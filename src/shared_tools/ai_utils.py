@@ -21,7 +21,7 @@ You must strictly follow the existing patterns, directory structure, and coding 
 2.  **Files to Generate:**
     * `__init__.py`: Empty file.
     * `<domain>_data.py`: Python script to generate synthetic data (using Faker/pandas) and upload to Starburst. You must import the `_data.py` files from the context. MUST use `shared_tools` imports.
-    * `<domain>_data_product.yaml`: The Data Product definition file. MUST use explicit 3-part naming (`${{CATALOG}}.${{SCHEMA}}.table`) in SQL.
+    * `<domain>_data_product.yaml`: The Data Product definition file. MUST use explicit 3-part naming (`${{CATALOG}}.${{SCHEMA}}.table`) in SQL. Each Data Product must have at least 2 views. Data Product must include at least one view 50 words and beetween 20 to 50 words for views. Thoses description will help to provide context.For each view provide columns name, type and description
     * `.env`: Local environment variables for this specific data product.
 3.  **Code Style:**
     * Use `shared_tools.lakehouse_utils` for schema setup and upload.

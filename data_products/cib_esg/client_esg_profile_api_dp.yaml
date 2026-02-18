@@ -1,0 +1,95 @@
+# cib_esg/client_esg_profile_api_dp.yaml
+name: "CIB Client ESG Profile API"
+description: "This data product is built for real-time consumption by front-office systems, providing Relationship Managers (RMs) with a comprehensive, 360-degree ESG profile of their clients. It consolidates key metrics like ESG scores, emissions data, and recent sustainable finance deals to empower RMs during client conversations, enabling them to act as strategic advisors."
+summary: "Provides RMs with real-time ESG insights for client engagement."
+domain: "CIB ESG"
+catalog: ${CIB_ESG_CLIENT_DP_CATALOG}
+schema: ${CIB_ESG_CLIENT_DP_SCHEMA}
+owners:
+  - name: "Front Office & CRM Technology"
+    email: "frontoffice.tech@cib.com"
+
+views:
+  - name: "v_client_esg_snapshot"
+    description: "A flattened, comprehensive view combining a client's firmographic data with their latest ESG scores and total financed emissions. This is the primary endpoint for a client profile API, offering a quick, actionable summary for RMs."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          c.client_id,
+          c.client_name,
+          c.industry_sector,
+          c.hq_country,
+          r.overall_esg_score,
+          r.environmental_score,
+          r.social_score,
+          r.governance_score,
+          r.has_controversies_flag,
+          e.scope1_emissions_tco2e + e.scope2_emissions_tco2e as financed_emissions_s1_s2
+      FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.clients_master c
+      LEFT JOIN ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.esg_risk_ratings r ON c.client_id = r.client_id
+      LEFT JOIN ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.portfolio_emissions e ON c.client_id = e.client_id
+    columns:
+      - name: "client_id"
+        type: "varchar"
+        description: "Unique identifier for the corporate client."
+      - name: "client_name"
+        type: "varchar"
+        description: "Legal name of the corporate client."
+      - name: "industry_sector"
+        type: "varchar"
+        description: "Primary industry sector of the client."
+      - name: "hq_country"
+        type: "varchar"
+        description: "Country where the client is headquartered."
+      - name: "overall_esg_score"
+        type: "bigint"
+        description: "The latest composite ESG score for the client."
+      - name: "environmental_score"
+        type: "bigint"
+        description: "The 'E' pillar score from the ESG rating."
+      - name: "social_score"
+        type: "bigint"
+        description: "The 'S' pillar score from the ESG rating."
+      - name: "governance_score"
+        type: "bigint"
+        description: "The 'G' pillar score from the ESG rating."
+      - name: "has_controversies_flag"
+        type: "boolean"
+        description: "Indicates if there are active ESG controversies."
+      - name: "financed_emissions_s1_s2"
+        type: "bigint"
+        description: "Sum of the client's Scope 1 and 2 emissions in tCO2e."
+
+  - name: "v_client_transition_opportunities"
+    description: "Identifies potential business opportunities by flagging clients in high-impact sectors who have not yet engaged in sustainable financing. This helps Relationship Managers proactively pitch relevant green finance products and transition advisory services."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          c.client_id,
+          c.client_name,
+          c.industry_sector,
+          r.overall_esg_score
+      FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.clients_master c
+      JOIN ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.esg_risk_ratings r ON c.client_id = r.client_id
+      WHERE
+          c.industry_sector IN ('Oil & Gas', 'Utilities', 'Industrials', 'Consumer Goods')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.deals_master d
+              WHERE d.client_id = c.client_id
+              AND d.deal_type != 'General Corporate Purpose'
+          )
+      ORDER BY r.overall_esg_score ASC
+    columns:
+      - name: "client_id"
+        type: "varchar"
+        description: "Unique identifier for the client with a potential opportunity."
+      - name: "client_name"
+        type: "varchar"
+        description: "Legal name of the client."
+      - name: "industry_sector"
+        type: "varchar"
+        description: "The client's high-impact industry sector."
+      - name: "overall_esg_score"
+        type: "bigint"
+        description: "The client's ESG score, useful for prioritizing engagement."

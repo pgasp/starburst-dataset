@@ -2,3 +2,7 @@
 .env
 /.venv
 /src/shared_tools/__pycache__
+*.pga
+*.victor
+data_products/asset_management/.envpga
+data_products/integrated_manufacturing/.envpga

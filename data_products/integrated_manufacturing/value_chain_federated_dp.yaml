@@ -2,7 +2,18 @@
 
 # --- CROSS-FUNCTIONAL VALUE CHAIN DATA PRODUCT (Federated) ---
 name: "Manufacturing Value Chain Profitability"
-description: "Federated layer linking raw material costs (SCM/ERP) to manufacturing efficiency (MES) and final demand (CRM)."
+description: |
+  This federated data product provides a holistic financial view by linking raw material costs (SCM/ERP), manufacturing schedules (MES), and final sales demand (CRM). It is designed for finance and executive teams to monitor performance and strategic alignment.
+
+  **Key Objectives:**
+  - **Monitor Profitability:** Analyze the variance between planned costs in ERP and actual purchase prices from suppliers.
+  - **Align Production with Demand:** Identify gaps between customer orders and the scheduled production pipeline to mitigate stockout risks.
+  - **Analyze Cost Variances:** Quantify the financial impact of component price fluctuations on the cost of goods sold (COGS).
+
+  **Business Questions Answered:**
+  1. For which products are we paying significantly more for components than our standard cost estimates?
+  2. Are we at risk of a stockout? Which products have the biggest gap between customer orders and scheduled production?
+  3. What is the financial impact of the variance between component purchase price and planned cost?
 summary: "Views for Cost-of-Goods-Sold and Demand Fulfillment"
 
 # DATA PRODUCT DESTINATION (Schema 3: Federated)
@@ -12,7 +23,16 @@ schema: ${MANUF_FEDERATED_DP_SCHEMA}
 
 owners:
   - name: "Executive & Finance"
-    email: "finance@mfg-corp.com"
+    email: "pascal.gasp@starburstdata.com"
+
+tags:
+  - "Federated"
+  - "Finance"
+  - "Profitability"
+  - "COGS"
+  - "SCM"
+  - "CRM"
+  - "Demand Planning"
 
 # ==============================================================================
 # SEMANTIC VIEWS
@@ -21,7 +41,7 @@ views:
   
   # 1. Total Cost of Finished Goods (ERP/SCM Federation - Stock Management/Cost)
   - name: "v_cost_of_finished_goods"
-    description: "Calculates a final cost estimate by federating planned ERP cost, actual SCM purchase cost, and MES efficiency."
+    description: "Calculates a final cost estimate by federating planned ERP cost, actual SCM purchase cost, and MES efficiency. This view is critical for finance teams to monitor cost of goods sold (COGS) and identify drivers of profit margin erosion."
     security_mode: "INVOKER" 
     
     query: |
@@ -49,19 +69,25 @@ views:
       - name: "PartID"
         type: "varchar"
         description: "ID of the component/finished good."
+      - name: "PartName"
+        type: "varchar"
+        description: "The common name of the part."
       - name: "PlannedCost_ERP"
         type: "double"
         description: "Standard unit cost from ERP master data."
       - name: "ActualCost_SCM"
         type: "double"
         description: "Average purchase price based on recent supplier invoices."
+      - name: "SupplierLeadTime_Days"
+        type: "double"
+        description: "Average delivery lead time from suppliers for this part."
       - name: "CostVariance_Pct"
         type: "double"
         description: "Percentage variance between actual purchase cost and planned ERP cost."
 
   # 2. Demand Fulfillment vs. Production Schedule (CRM/MES Federation - Optimization/Efficiency)
   - name: "v_demand_fulfillment_gap"
-    description: "Compares customer demand (CRM) against available production schedule (MES) by Top-Level Part ID."
+    description: "Compares customer demand (CRM) against available production schedule (MES) by Top-Level Part ID. This enables operations teams to proactively identify and address potential stockouts or shortfalls in production capacity."
     security_mode: "INVOKER" 
     
     query: |
@@ -97,6 +123,9 @@ views:
       - name: "TotalDemand"
         type: "bigint"
         description: "Total quantity demanded by customers (CRM)."
+      - name: "TotalScheduledProduction"
+        type: "bigint"
+        description: "Total quantity scheduled for production (MES)."
       - name: "FulfillmentGap"
         type: "bigint"
         description: "Difference between scheduled production and customer demand (Negative = Risk of Stockout)."

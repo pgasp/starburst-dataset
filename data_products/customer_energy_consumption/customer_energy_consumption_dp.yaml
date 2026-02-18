@@ -1,0 +1,168 @@
+# customer_energy_consumption/customer_energy_consumption_dp.yaml
+name: "Profil Client 360 - Consommation d'Énergie"
+description: |
+  Ce produit de données fournit une vue complète et unifiée de chaque client en fédérant les données de plusieurs systèmes sources. Il relie les informations démographiques et contractuelles des systèmes CRM et de facturation avec les données de consommation haute fréquence des compteurs intelligents et l'historique des interactions avec le support. Ce profil holistique permet des analyses avancées pour le marketing personnalisé, la prédiction de résiliation (churn), la prévision de charge et l'amélioration du service client en offrant une source de vérité unique pour toutes les activités et métriques liées au client.
+
+  **Exemples de questions métier :**
+
+  *   **Rétention Client :** "Quels sont nos clients les plus à risque de résiliation, et comment pouvons-nous agir de manière proactive ?"
+      *   **Réponse :** La vue `v_at_risk_customers_churn_indicator` est conçue pour cela. Elle croise les données pour montrer les clients avec de multiples contacts au support ou une consommation en baisse, deux indicateurs forts d'un risque de départ. Cela fournit une liste d'actions prioritaires pour nos équipes de rétention.
+
+  *   **La Vision 360 :** "Pour préparer un appel avec un client, pouvez-vous me donner une vue d'ensemble de son profil : son contrat, sa consommation moyenne, s'il a eu des problèmes récents et si ses factures sont à jour ?"
+      *   **Réponse :** En interrogeant `v_customer_summary_profile` pour ce client, nous voyons son contrat, sa consommation et son historique de support. En parallèle, une requête sur `billing_invoicing_dp.v_invoice_details_with_customer` confirme son statut de paiement. Le conseiller a une vision complète en quelques secondes.
+summary: "Vue unifiée des comptes clients, des habitudes de consommation et des interactions avec le support."
+
+domain: "Customer Energy Consumption"
+catalog: ${ENERGY_DP_CATALOG}
+schema: ${ENERGY_DP_SCHEMA}
+
+owners:
+  - name: "Relation Client & Marketing"
+    email: "marketing@edf-demo.com"
+
+tags:
+  - "C360"
+  - "Energie"
+  - "Compteur Intelligent"
+  - "Service Client"
+
+views:
+  - name: "v_customer_summary_profile"
+    description: "Une vue C360 centrale qui joint les données démographiques des clients avec les détails de leurs comptes actifs, et agrège les métriques clés de consommation et de support. Elle fournit un aperçu de haut niveau du statut de chaque client, de sa consommation globale et de son engagement avec les services de support, idéal pour les tableaux de bord et les consultations rapides."
+    security_mode: "INVOKER"
+    query: |
+      WITH
+      ConsumptionMetrics AS (
+        SELECT
+          AccountID,
+          COUNT(*) as ReadingCount,
+          SUM(Consumption_kWh) as TotalConsumption_kWh,
+          AVG(Consumption_kWh) * 24 * 30 as EstimatedMonthlyConsumption_kWh,
+          MAX(CAST(Timestamp AS TIMESTAMP)) as LastReadingTimestamp
+        FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.smart_meter_readings
+        GROUP BY 1
+      ),
+      SupportMetrics AS (
+        SELECT
+          AccountID,
+          COUNT(*) as TotalInterventions
+        FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.support_interventions
+        GROUP BY 1
+      )
+      SELECT
+        c.CustomerID,
+        c.FirstName,
+        c.LastName,
+        c.Email,
+        c.City,
+        a.AccountID,
+        a.ContractType,
+        a.Status AS AccountStatus,
+        a.StartDate AS AccountStartDate,
+        COALESCE(cm.TotalConsumption_kWh, 0) as TotalConsumption_kWh,
+        cm.EstimatedMonthlyConsumption_kWh,
+        cm.LastReadingTimestamp,
+        COALESCE(sm.TotalInterventions, 0) as SupportTicketCount
+      FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.crm_customers c
+      JOIN ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.billing_accounts a ON c.CustomerID = a.CustomerID
+      LEFT JOIN ConsumptionMetrics cm ON a.AccountID = cm.AccountID
+      LEFT JOIN SupportMetrics sm ON a.AccountID = sm.AccountID
+      WHERE a.Status = 'Actif'
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Identifiant unique du client."
+      - name: "LastName"
+        type: "varchar"
+        description: "Nom de famille du client."
+      - name: "AccountID"
+        type: "varchar"
+        description: "Identifiant unique du compte de facturation du client."
+      - name: "ContractType"
+        type: "varchar"
+        description: "Type de contrat d'électricité (ex: Base, Heures Creuses)."
+      - name: "EstimatedMonthlyConsumption_kWh"
+        type: "double"
+        description: "Estimation de la consommation mensuelle moyenne en kWh basée sur les relevés récents."
+      - name: "LastReadingTimestamp"
+        type: "timestamp(3) with time zone"
+        description: "L'horodatage du tout dernier relevé de compteur intelligent reçu."
+      - name: "SupportTicketCount"
+        type: "bigint"
+        description: "Nombre total d'interventions de support enregistrées pour ce compte."
+
+  - name: "v_monthly_consumption_trends"
+    description: "Agrège les données des compteurs intelligents pour afficher la consommation d'énergie totale par compte pour chaque mois. Cette vue est cruciale pour analyser les schémas de consommation dans le temps, identifier les tendances saisonnières et détecter les changements significatifs d'utilisation qui pourraient indiquer un changement dans la situation d'un client."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        AccountID,
+        DATE_TRUNC('month', CAST(Timestamp AS TIMESTAMP)) as ConsumptionMonth,
+        SUM(Consumption_kWh) as MonthlyConsumption_kWh,
+        AVG(Consumption_kWh) as AverageHourlyConsumption_kWh
+      FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.smart_meter_readings
+      GROUP BY 1, 2
+      ORDER BY 1, 2 DESC
+    columns:
+      - name: "AccountID"
+        type: "varchar"
+        description: "Identifiant unique du compte de facturation du client."
+      - name: "ConsumptionMonth"
+        type: "timestamp(3) with time zone"
+        description: "Le premier jour du mois pour lequel la consommation est agrégée."
+      - name: "MonthlyConsumption_kWh"
+        type: "double"
+        description: "Total de kilowattheures consommés durant le mois spécifié."
+      - name: "AverageHourlyConsumption_kWh"
+        type: "double"
+        description: "Consommation horaire moyenne pour ce mois, utile pour identifier la consommation de base."
+
+  - name: "v_at_risk_customers_churn_indicator"
+    description: "Identifie les clients qui pourraient être à risque de résiliation en signalant ceux avec un nombre élevé de tickets de support récents ou une baisse significative de consommation. Cette vue proactive permet aux équipes de rétention de cibler leurs actions et de traiter les problèmes potentiels avant qu'un client ne décide de partir."
+    security_mode: "INVOKER"
+    query: |
+      WITH
+      CustomerProfileBase AS (
+          SELECT
+              c.CustomerID,
+              c.LastName,
+              c.Email,
+              a.AccountID,
+              (SELECT avg(Consumption_kWh) * 24 * 30 FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.smart_meter_readings WHERE AccountID = a.AccountID) as EstimatedMonthlyConsumption_kWh,
+              (SELECT count(*) FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.support_interventions WHERE AccountID = a.AccountID) as SupportTicketCount
+          FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.crm_customers c
+          JOIN ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.billing_accounts a ON c.CustomerID = a.CustomerID
+          WHERE a.Status = 'Actif'
+      ),
+      RecentInterventions AS (
+          SELECT
+              AccountID,
+              COUNT(*) as RecentTicketCount
+          FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.support_interventions
+          WHERE CAST(RequestDate AS TIMESTAMP) >= (NOW() - INTERVAL '90' DAY)
+          GROUP BY 1
+      )
+      SELECT
+          p.CustomerID,
+          p.AccountID,
+          p.LastName,
+          p.Email,
+          p.SupportTicketCount,
+          ri.RecentTicketCount,
+          p.EstimatedMonthlyConsumption_kWh
+      FROM CustomerProfileBase p
+      LEFT JOIN RecentInterventions ri ON p.AccountID = ri.AccountID
+      WHERE ri.RecentTicketCount >= 2 OR p.EstimatedMonthlyConsumption_kWh < 50
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Identifiant unique du client potentiellement à risque."
+      - name: "AccountID"
+        type: "varchar"
+        description: "L'identifiant du compte associé."
+      - name: "RecentTicketCount"
+        type: "bigint"
+        description: "Nombre de tickets de support ouverts au cours des 90 derniers jours."
+      - name: "EstimatedMonthlyConsumption_kWh"
+        type: "double"
+        description: "Consommation mensuelle estimée actuelle. Une consommation très faible peut être un indicateur de résiliation."

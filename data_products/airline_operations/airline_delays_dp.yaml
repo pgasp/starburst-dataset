@@ -1,0 +1,77 @@
+# airline_operations/airline_delays_dp.yaml
+name: "Airline On-Time Performance & Delays"
+description: "Provides analytical views on flight delays, cancellations, and on-time performance. This data product helps operations teams identify root causes of delays, track performance against benchmarks, and analyze patterns by airline, route, and time of day. It is essential for operational planning and improving overall network punctuality."
+summary: "Flight delays, cancellations, and on-time performance metrics."
+
+domain: "Airline Operations"
+catalog: ${AIRLINE_DELAYS_DP_CATALOG}
+schema: ${AIRLINE_DELAYS_DP_SCHEMA}
+
+owners:
+  - name: "Operations Control Center"
+    email: "occ@fly-example.com"
+
+views:
+  - name: "v_delay_summary_by_route"
+    description: "Aggregates key delay metrics for each flight route (origin-destination pair), showing average departure and arrival delays, total number of flights, and the cancellation rate. Useful for identifying chronically problematic routes in the network."
+    query: |
+      SELECT
+          OriginAirportCode,
+          DestinationAirportCode,
+          CAST(AVG(DepartureDelayMinutes) AS INTEGER) AS AvgDepartureDelayMins,
+          CAST(AVG(ArrivalDelayMinutes) AS INTEGER) AS AvgArrivalDelayMins,
+          COUNT(*) AS TotalFlights,
+          CAST(SUM(CASE WHEN Cancelled THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) * 100 AS CancellationRate_Pct
+      FROM
+          ${AIRLINE_RAW_CATALOG}.${AIRLINE_RAW_SCHEMA}.flights
+      GROUP BY
+          1, 2
+      ORDER BY
+          AvgArrivalDelayMins DESC
+    columns:
+      - name: "OriginAirportCode"
+        type: "varchar"
+        description: "The IATA code of the flight's origin airport."
+      - name: "DestinationAirportCode"
+        type: "varchar"
+        description: "The IATA code of the flight's destination airport."
+      - name: "AvgDepartureDelayMins"
+        type: "integer"
+        description: "The average departure delay in minutes for this route."
+      - name: "AvgArrivalDelayMins"
+        type: "integer"
+        description: "The average arrival delay in minutes for this route."
+      - name: "TotalFlights"
+        type: "bigint"
+        description: "The total number of flights recorded on this route."
+      - name: "CancellationRate_Pct"
+        type: "double"
+        description: "The percentage of flights on this route that were cancelled."
+
+  - name: "v_airline_performance_ranking"
+    description: "Ranks airlines based on their on-time arrival percentage, defined as arriving within 15 minutes of schedule. This view provides a high-level comparison of airline punctuality, helping to benchmark performance across carriers."
+    query: |
+      SELECT
+          a.AirlineName,
+          CAST(AVG(f.ArrivalDelayMinutes) AS INTEGER) AS AvgArrivalDelay_Mins,
+          COUNT(CASE WHEN f.ArrivalDelayMinutes <= 15 THEN 1 END) * 100.0 / COUNT(*) AS OnTimeArrival_Pct
+      FROM
+          ${AIRLINE_RAW_CATALOG}.${AIRLINE_RAW_SCHEMA}.flights f
+      JOIN
+          ${AIRLINE_RAW_CATALOG}.${AIRLINE_RAW_SCHEMA}.airlines a ON f.AirlineCode = a.AirlineCode
+      WHERE
+          f.Cancelled = false
+      GROUP BY
+          1
+      ORDER BY
+          OnTimeArrival_Pct DESC
+    columns:
+      - name: "AirlineName"
+        type: "varchar"
+        description: "The full name of the airline."
+      - name: "AvgArrivalDelay_Mins"
+        type: "integer"
+        description: "The average arrival delay in minutes across all flights for the airline."
+      - name: "OnTimeArrival_Pct"
+        type: "double"
+        description: "Percentage of the airline's flights that arrived at their destination within 15 minutes of the scheduled time."

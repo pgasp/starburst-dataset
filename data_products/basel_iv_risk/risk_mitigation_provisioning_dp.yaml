@@ -1,0 +1,96 @@
+# basel_iv_risk/risk_mitigation_provisioning_dp.yaml
+name: "Risk Mitigation & Final Exposure"
+description: "This data product provides a holistic view of credit risk mitigation and its impact on final exposures. It quantifies the risk reduction from collateral and guarantees, and separately tracks the adequacy of IFRS9 provisions against prudential expected losses. This is vital for understanding net risk positions and ensuring alignment between accounting and risk capital frameworks."
+summary: "Calculates net exposure after CRM and analyzes provisioning adequacy."
+domain: "Basel IV Credit Risk"
+catalog: ${BASEL_MITIGATION_DP_CATALOG}
+schema: ${BASEL_MITIGATION_DP_SCHEMA}
+owners:
+  - name: "Finance & Credit Risk Control"
+    email: "finance.control@ca-sa.com"
+
+views:
+  - name: "v_exposure_after_crm"
+    description: "Presents the final, net exposure for each loan after applying all eligible Credit Risk Mitigation (CRM) techniques. It calculates the initial EAD, then systematically reduces it by the value of haircut-adjusted collateral and guarantees to arrive at the final EAD figure used for RWA calculation. This view is fundamental for understanding the bank's true risk appetite."
+    query: |
+      WITH EAD_Base AS (
+        SELECT
+          LoanID,
+          CustomerID,
+          DrawnAmount + (CommitmentAmount - DrawnAmount) * CCF AS EAD
+        FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.loans
+      ), Collateral_Net AS (
+        SELECT
+          LoanID,
+          SUM(MarketValue * (1 - RegulatoryHaircut)) as Total_Net_Collateral
+        FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.collateral
+        GROUP BY 1
+      ), Guarantee_Net AS (
+        SELECT
+          LoanID,
+          SUM(GuaranteedAmount) as Total_Guaranteed
+        FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.guarantees
+        GROUP BY 1
+      )
+      SELECT
+        b.LoanID,
+        b.CustomerID,
+        b.EAD as Gross_EAD,
+        COALESCE(cn.Total_Net_Collateral, 0) AS Net_Collateral_Value,
+        COALESCE(gn.Total_Guaranteed, 0) AS Guaranteed_Value,
+        GREATEST(0, b.EAD - COALESCE(cn.Total_Net_Collateral, 0) - COALESCE(gn.Total_Guaranteed, 0)) AS Final_EAD_After_CRM
+      FROM EAD_Base b
+      LEFT JOIN Collateral_Net cn ON b.LoanID = cn.LoanID
+      LEFT JOIN Guarantee_Net gn ON b.LoanID = gn.LoanID
+    columns:
+      - name: "LoanID"
+        type: "varchar"
+        description: "Unique identifier for the loan exposure."
+      - name: "Gross_EAD"
+        type: "double"
+        description: "The initial Exposure at Default before any risk mitigation is applied."
+      - name: "Net_Collateral_Value"
+        type: "double"
+        description: "The total value of all associated collateral after applying regulatory haircuts."
+      - name: "Guaranteed_Value"
+        type: "double"
+        description: "The total value of all guarantees associated with the loan."
+      - name: "Final_EAD_After_CRM"
+        type: "double"
+        description: "The final, net exposure amount after subtracting all CRM."
+
+  - name: "v_portfolio_provision_adequacy"
+    description: "Aggregates the provisioning gap analysis to a portfolio level, providing a strategic overview for management. It summarizes the difference between accounting provisions (ECL) and prudential expected losses (EL) by counterparty type and IFRS9 stage, quickly identifying systemic over- or under-provisioning across different business segments."
+    query: |
+      WITH gap_analysis AS (
+        SELECT
+            l.CustomerID,
+            p.ProvisioningStage,
+            p.ECL_Amount - ((l.DrawnAmount + (l.CommitmentAmount - l.DrawnAmount) * l.CCF) * cust.PD_Internal * l.LGD) AS Provisioning_Gap
+        FROM ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.provisions_ifrs9 p
+        JOIN ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.loans l ON p.LoanID = l.LoanID
+        JOIN ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.customers cust ON l.CustomerID = cust.CustomerID
+      )
+      SELECT
+        c.CounterpartyType,
+        g.ProvisioningStage,
+        COUNT(*) AS Number_Of_Loans,
+        SUM(g.Provisioning_Gap) AS Total_Provisioning_Gap,
+        AVG(g.Provisioning_Gap) AS Average_Gap_Per_Loan
+      FROM gap_analysis g
+      JOIN ${BASEL_RAW_CATALOG}.${BASEL_RAW_SCHEMA}.customers c ON g.CustomerID = c.CustomerID
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+    columns:
+      - name: "CounterpartyType"
+        type: "varchar"
+        description: "Basel IV classification of the counterparty (Corporate, SME, etc.)."
+      - name: "ProvisioningStage"
+        type: "varchar"
+        description: "IFRS9 classification indicating credit deterioration (Stage 1, 2, or 3)."
+      - name: "Total_Provisioning_Gap"
+        type: "double"
+        description: "The total aggregated difference between accounting provisions and prudential expected loss for the segment."
+      - name: "Average_Gap_Per_Loan"
+        type: "double"
+        description: "The average gap amount per loan within the segment."

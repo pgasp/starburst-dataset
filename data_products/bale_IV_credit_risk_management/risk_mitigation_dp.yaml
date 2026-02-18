@@ -1,0 +1,75 @@
+# --- ATTÉNUATION DU RISQUE & GARANTIES BÂLE IV ---
+name: "Atténuation du Risque & Garanties Bâle IV"
+description: "Ce Data Product se focalise sur les techniques d'atténuation du risque de crédit (Credit Risk Mitigation - CRM). Il permet de quantifier l'impact des sûretés et garanties sur la réduction de l'exposition. La valorisation nette des sûretés après application des décotes réglementaires (haircuts) est un levier majeur pour optimiser la charge en capital (RWA)."
+summary: "Vues pour l'analyse de la couverture par les sûretés et l'efficacité des garanties."
+
+domain: "BALE IV"
+catalog: ${RISK_MITIGATION_DP_CATALOG}
+schema: ${RISK_MITIGATION_DP_SCHEMA}
+
+owners:
+  - name: "Département Structuration Crédit & Garanties"
+    email: "crm.management@casa.com"
+
+views:
+  - name: "v_collateral_coverage_ratio"
+    description: "Calcule la valeur nette des sûretés après l'application des décotes réglementaires (haircuts) et détermine le taux de couverture de chaque exposition. Cette analyse est essentielle pour identifier les expositions insuffisamment couvertes et pour calculer l'ajustement de la LGD (Loss Given Default)."
+    query: |
+      WITH Haircut_Mapping AS (
+          SELECT 'Real Estate' AS type, 0.30 AS haircut
+          UNION ALL SELECT 'Cash' AS type, 0.00 AS haircut
+          UNION ALL SELECT 'Financial Instruments' AS type, 0.15 AS haircut
+          UNION ALL SELECT 'Receivables' AS type, 0.25 AS haircut
+          UNION ALL SELECT 'Third-Party Guarantee' AS type, 0.0 AS haircut
+      )
+      SELECT
+          c.exposure_id,
+          c.mitigant_type,
+          c.market_value_eur,
+          h.haircut AS regulatory_haircut,
+          c.market_value_eur * (1 - h.haircut) AS net_mitigant_value,
+          e.gross_exposure_eur,
+          (c.market_value_eur * (1 - h.haircut)) / e.gross_exposure_eur AS coverage_ratio
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_collaterals_guarantees c
+      JOIN Haircut_Mapping h ON c.mitigant_type = h.type
+      JOIN ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_expositions e ON c.exposure_id = e.exposure_id
+    columns:
+      - name: "exposure_id"
+        type: "varchar"
+        description: "Identifiant de l'exposition couverte."
+      - name: "mitigant_type"
+        type: "varchar"
+        description: "Type de sûreté ou garantie (ex: Immobilier, Cash)."
+      - name: "regulatory_haircut"
+        type: "double"
+        description: "Décote réglementaire appliquée à la valeur de marché."
+      - name: "net_mitigant_value"
+        type: "double"
+        description: "Valeur de la sûreté après application de la décote."
+      - name: "coverage_ratio"
+        type: "double"
+        description: "Taux de couverture de l'exposition par la sûreté nette."
+
+  - name: "v_guarantee_effectiveness"
+    description: "Évalue la qualité des garanties tierces en liant le montant garanti à la solidité financière du garant (via sa notation de crédit). Cette vue aide à différencier les garanties robustes (ex: État) des garanties plus risquées, impactant directement le calcul de la LGD ajustée."
+    query: |
+      SELECT
+          g.mitigant_id,
+          g.exposure_id,
+          g.guarantor_id,
+          c.counterparty_name AS guarantor_name,
+          c.internal_rating AS guarantor_rating,
+          g.market_value_eur AS guaranteed_amount
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_collaterals_guarantees g
+      JOIN ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_counterparties c ON g.guarantor_id = c.counterparty_id
+      WHERE g.mitigant_type = 'Third-Party Guarantee' AND g.guarantor_id IS NOT NULL
+    columns:
+      - name: "guarantor_id"
+        type: "varchar"
+        description: "Identifiant du garant."
+      - name: "guarantor_rating"
+        type: "varchar"
+        description: "Note de crédit interne du garant, indicateur de sa solidité."
+      - name: "guaranteed_amount"
+        type: "double"
+        description: "Montant de l'exposition couvert par la garantie."

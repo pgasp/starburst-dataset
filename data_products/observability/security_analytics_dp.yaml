@@ -1,0 +1,64 @@
+name: "Security & Threat Monitoring"
+description: "Provides key security metrics on authentication attempts and web application firewall blocks to help security teams identify and respond to potential threats. This product is the foundation for the Security Operations Center (SOC) to perform threat hunting, incident response, and proactive defense against common web-based attacks."
+summary: "Views for brute-force detection, WAF activity, and hourly security events."
+
+# Data Product Destination
+domain: "Observability"
+catalog: ${OBS_SECURITY_DP_CATALOG}
+schema: ${OBS_SECURITY_DP_SCHEMA}
+
+owners:
+  - name: "Security Operations Center (SOC)"
+    email: "soc-team@example.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  - name: "v_failed_login_attempts_by_ip"
+    description: "Aggregates failed login attempts over the last 7 days by source IP address. High counts from a single IP can indicate a brute-force or credential stuffing attack, providing a clear signal for the security team to investigate and potentially block the offending IP."
+    security_mode: "INVOKER"
+    
+    query: |
+      SELECT
+          ip_address,
+          COUNT(*) AS failed_attempt_count,
+          COUNT(DISTINCT user_id) AS distinct_users_targeted,
+          MAX(CAST("timestamp" AS TIMESTAMP)) AS last_attempt_timestamp
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.auth_logs
+      WHERE login_successful = false
+        AND CAST("timestamp" AS TIMESTAMP) >= NOW() - INTERVAL '7' DAY
+      GROUP BY 1
+      ORDER BY failed_attempt_count DESC
+      LIMIT 100
+
+    columns:
+      - name: "ip_address"
+        type: "varchar"
+        description: "The source IP address of the failed login attempts."
+      - name: "failed_attempt_count"
+        type: "bigint"
+        description: "Total number of failed logins from this IP in the last 7 days."
+
+  - name: "v_suspicious_waf_activity"
+    description: "Summarizes blocked requests from the Web Application Firewall (WAF) by client IP and attack type, helping to identify targeted attack campaigns. This allows analysts to understand what kinds of attacks are being attempted and from where, informing firewall rule tuning."
+    security_mode: "INVOKER"
+    
+    query: |
+      SELECT
+          client_ip,
+          attack_type,
+          COUNT(*) AS blocked_request_count,
+          ARRAY_AGG(DISTINCT request_uri) AS targeted_endpoints
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.waf_logs
+      WHERE action = 'BLOCK'
+      GROUP BY 1, 2
+      ORDER BY blocked_request_count DESC
+
+    columns:
+      - name: "client_ip"
+        type: "varchar"
+        description: "The IP address blocked by the WAF."
+      - name: "attack_type"
+        type: "varchar"
+        description: "The classification of the attack (e.g., SQL Injection)."

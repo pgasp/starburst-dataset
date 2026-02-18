@@ -1,0 +1,100 @@
+# asset_management/asset_management_operations_dp.yaml
+name: "Asset Management Trade & Cash Operations"
+description: |
+  A vital Data Product for the back-office and operations teams, offering insights into daily cash movements, trade lifecycle status, and reconciliation. It helps ensure operational efficiency, manage liquidity effectively, and quickly identify and resolve trade settlement discrepancies, reducing operational risk.
+
+  **Business Questions Answered:**
+  1. Which trades are at risk of failing to settle by their due date?
+  2. What was the net cash flow yesterday for the Euro Bond Fund, and do we need to manage our liquidity position?
+  3. Can I get a list of all unsettled trades to follow up with counterparties on potential delays?
+summary: "Views for daily cash flow management, trade settlement monitoring, and operational risk."
+
+domain: "Asset Management"
+catalog: ${ASSET_MGMT_OPERATIONS_DP_CATALOG}
+schema: ${ASSET_MGMT_OPERATIONS_DP_SCHEMA}
+
+owners:
+  - name: "Operations & Settlements Team"
+    email: "ops@bnpp-cib.com"
+
+views:
+  - name: "v_daily_net_cash_flow"
+    description: "Summarizes total daily subscriptions (inflows) and redemptions (outflows) for each fund, calculating the net cash movement. This view is essential for treasury and liquidity management to anticipate funding needs."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          Fund_Code,
+          Report_Date,
+          COALESCE(SUM(CASE WHEN Flow_Type = 'Subscription' THEN Amount END), 0) AS Total_Inflows,
+          COALESCE(SUM(CASE WHEN Flow_Type = 'Redemption' THEN Amount END), 0) AS Total_Outflows,
+          COALESCE(SUM(CASE WHEN Flow_Type = 'Subscription' THEN Amount ELSE -Amount END), 0) AS Net_Cash_Flow
+      FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_cash_flows
+      WHERE Report_Date >= NOW() - INTERVAL '30' DAY
+      GROUP BY Fund_Code, Report_Date
+      ORDER BY Report_Date DESC, Fund_Code
+    columns:
+      - name: "Fund_Code"
+        type: "varchar"
+        description: "Unique identifier for the investment fund."
+      - name: "Report_Date"
+        type: "date"
+        description: "The date of the cash flow activity."
+      - name: "Total_Inflows"
+        type: "double"
+        description: "Total value of subscriptions for the day."
+      - name: "Total_Outflows"
+        type: "double"
+        description: "Total value of redemptions for the day."
+      - name: "Net_Cash_Flow"
+        type: "double"
+        description: "The net movement of cash (Inflows - Outflows)."
+
+  - name: "v_unsettled_trades_monitor"
+    description: "Lists all trades that have not yet reached 'Settled' status as of the latest reporting date. This is a critical risk management tool for identifying potential settlement failures and managing counterparty exposure."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          Trade_ID,
+          Fund_Code,
+          Trade_Date,
+          Settle_Date,
+          ISIN,
+          Buy_Sell,
+          Quantity,
+          Trade_Price,
+          Counterparty,
+          Status
+      FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.trades
+      WHERE Status LIKE 'Unsettled%'
+      ORDER BY Settle_Date ASC, Fund_Code
+    columns:
+      - name: "Trade_ID"
+        type: "varchar"
+        description: "The unique identifier for the trade."
+      - name: "Fund_Code"
+        type: "varchar"
+        description: "The fund that executed the trade."
+      - name: "Trade_Date"
+        type: "date"
+        description: "The date the trade was executed."
+      - name: "Settle_Date"
+        type: "date"
+        description: "The expected date of settlement."
+      - name: "ISIN"
+        type: "varchar"
+        description: "Identifier for the traded security."
+      - name: "Buy_Sell"
+        type: "varchar"
+        description: "Indicates if the trade was a 'BUY' or 'SELL'."
+      - name: "Quantity"
+        type: "bigint"
+        description: "The number of units traded."
+      - name: "Trade_Price"
+        type: "double"
+        description: "The price at which the security was traded."
+      - name: "Counterparty"
+        type: "varchar"
+        description: "The other party involved in the trade."
+      - name: "Status"
+        type: "varchar"
+        description: "The current settlement status of the trade."

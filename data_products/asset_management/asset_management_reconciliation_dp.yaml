@@ -1,0 +1,103 @@
+# asset_management/asset_management_reconciliation_dp.yaml
+name: "Asset Management Reconciliation & Oversight"
+description: |
+  Provides critical oversight views for reconciling internal records against external sources like custodians and ensuring data integrity. This product is essential for risk management, compliance, and finance teams to identify and investigate discrepancies in NAV calculations and trade settlements, thereby safeguarding assets and ensuring accurate financial reporting.
+
+  **Business Questions Answered:**
+  1. Are there any trades that have passed their settlement date but have not yet settled?
+  2. Does our internally calculated NAV match the NAV reported by our custodian? What is the variance?
+summary: "Views for trade settlement exceptions and NAV reconciliation."
+
+domain: "Asset Management"
+catalog: ${ASSET_MGMT_RECON_DP_CATALOG}
+schema: ${ASSET_MGMT_RECON_DP_SCHEMA}
+
+owners:
+  - name: "Risk & Compliance Team"
+    email: "risk@bnpp-cib.com"
+
+views:
+  - name: "v_trade_settlement_exceptions"
+    description: "An actionable list of all trades that are past their scheduled settlement date but are not yet marked as 'Settled'. This view is the primary tool for the settlements team to prioritize follow-ups and mitigate operational risk."
+    security_mode: "INVOKER"
+    query: |
+      WITH LatestDate AS (
+        SELECT MAX(Report_Date) AS max_date FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_nav_positions
+      )
+      SELECT
+          Trade_ID,
+          Fund_Code,
+          Trade_Date,
+          Settle_Date,
+          DATE_DIFF('day', Settle_Date, (SELECT max_date FROM LatestDate)) as Days_Late,
+          Counterparty,
+          ISIN,
+          Quantity * Trade_Price AS Trade_Value
+      FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.trades
+      WHERE
+        Status LIKE 'Unsettled%' AND Settle_Date < (SELECT max_date FROM LatestDate)
+      ORDER BY Days_Late DESC
+    columns:
+      - name: "Trade_ID"
+        type: "varchar"
+        description: "Unique identifier for the trade."
+      - name: "Fund_Code"
+        type: "varchar"
+        description: "The fund that executed the trade."
+      - name: "Trade_Date"
+        type: "date"
+        description: "Date the trade was executed."
+      - name: "Settle_Date"
+        type: "date"
+        description: "The date the trade was expected to settle."
+      - name: "Days_Late"
+        type: "bigint"
+        description: "Number of days past the expected settlement date."
+      - name: "Counterparty"
+        type: "varchar"
+        description: "The counterparty for the trade."
+      - name: "ISIN"
+        type: "varchar"
+        description: "The security identifier."
+      - name: "Trade_Value"
+        type: "double"
+        description: "The total value of the trade (Quantity * Price)."
+
+  - name: "v_nav_reconciliation_summary"
+    description: "A simulation of a daily NAV reconciliation between internal records and a custodian's report. This view calculates a 'custodian NAV' with a slight random variance to highlight any discrepancies that need investigation."
+    security_mode: "INVOKER"
+    query: |
+      WITH LatestNavs AS (
+        SELECT
+          Fund_Code,
+          Report_Date,
+          ANY_VALUE(NAV) as Internal_NAV
+        FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_nav_positions
+        WHERE Report_Date = (SELECT MAX(Report_Date) FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_nav_positions)
+        GROUP BY Fund_Code, Report_Date
+      )
+      SELECT
+        Fund_Code,
+        Report_Date,
+        Internal_NAV,
+        -- Simulate a custodian NAV that is slightly different for demonstration
+        CAST(Internal_NAV * (1 + (RAND() - 0.5) / 1000) AS DECIMAL(18, 2)) AS Custodian_NAV_Simulated,
+        CAST(Internal_NAV - (Internal_NAV * (1 + (RAND() - 0.5) / 1000)) AS DECIMAL(18, 2)) AS Difference
+      FROM LatestNavs
+      ORDER BY ABS(Difference) DESC
+    columns:
+      - name: "Fund_Code"
+        type: "varchar"
+        description: "Identifier for the investment fund."
+      - name: "Report_Date"
+        type: "date"
+        description: "The date of the NAV reconciliation."
+      - name: "Internal_NAV"
+        type: "double"
+        description: "The NAV as calculated by internal systems."
+      - name: "Custodian_NAV_Simulated"
+        type: "decimal(18, 2)"
+        description: "A simulated NAV figure as would be reported by a custodian."
+      - name: "Difference"
+        type: "decimal(18, 2)"
+        description: "The variance between the internal and custodian NAV."

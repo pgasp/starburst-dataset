@@ -1,0 +1,74 @@
+# --- SOLVABILITÉ & RISQUE DE CRÉDIT BÂLE IV ---
+name: "Solvabilité & Risque de Crédit Bâle IV"
+description: "Ce Data Product transforme les données brutes d'exposition en indicateurs de pilotage du capital réglementaire. Il calcule l'Exposition au Défaut (EAD) nette, segmente les contreparties selon les nouvelles approches Bâle IV et fournit une première estimation des Actifs Pondérés par le Risque (RWA), essentiels pour le calcul des ratios de solvabilité comme le CET1."
+summary: "Vues sémantiques pour le calcul de l'EAD et l'analyse des contreparties."
+
+domain: "BALE IV"
+catalog: ${RISK_SOLVENCY_DP_CATALOG}
+schema: ${RISK_SOLVENCY_DP_SCHEMA}
+
+owners:
+  - name: "Département Risques et Capital"
+    email: "capital.management@casa.com"
+
+views:
+  - name: "v_ead_analysis_by_counterparty"
+    description: "Calcule l'exposition nette (EAD) en appliquant les facteurs de conversion réglementaires (CCF). Cette vue est cruciale pour agréger le risque au niveau de chaque contrepartie et préparer le calcul des RWA selon l'approche Standard (SA) en utilisant des pondérations fixes par segment."
+    query: |
+      WITH RWA_SA_Mapping AS (
+        SELECT 'Corporate' AS segment, 1.00 AS rwa_factor
+        UNION ALL SELECT 'SME' AS segment, 0.85 AS rwa_factor
+        UNION ALL SELECT 'Retail' AS segment, 0.75 AS rwa_factor
+        UNION ALL SELECT 'Bank' AS segment, 0.20 AS rwa_factor
+        UNION ALL SELECT 'Sovereign' AS segment, 0.00 AS rwa_factor
+      )
+      SELECT
+          c.counterparty_id,
+          c.counterparty_name,
+          c.basel_iv_segment,
+          e.product_type,
+          e.gross_exposure_eur,
+          e.gross_exposure_eur * e.ccf_credit_conversion_factor AS ead_exposure_at_default,
+          (e.gross_exposure_eur * e.ccf_credit_conversion_factor) * rwa.rwa_factor AS rwa_standard_approach
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_expositions e
+      JOIN ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_counterparties c ON e.counterparty_id = c.counterparty_id
+      LEFT JOIN RWA_SA_Mapping rwa ON c.basel_iv_segment = rwa.segment
+    columns:
+      - name: "counterparty_id"
+        type: "varchar"
+        description: "Identifiant unique de la contrepartie."
+      - name: "basel_iv_segment"
+        type: "varchar"
+        description: "Classe d'actif Bâle IV (Corporate, Sovereign, etc.)."
+      - name: "ead_exposure_at_default"
+        type: "double"
+        description: "Exposition nette au moment du défaut, après facteur de conversion."
+      - name: "rwa_standard_approach"
+        type: "double"
+        description: "Estimation des actifs pondérés par le risque selon l'approche Standard."
+
+  - name: "v_counterparty_credit_rating"
+    description: "Consolide les notations de crédit internes et externes pour chaque contrepartie. Cette vue est le point de départ pour évaluer la Probabilité de Défaut (PD), un paramètre clé des modèles de notation avancés (IRB) et du provisionnement IFRS9."
+    query: |
+      SELECT
+          counterparty_id,
+          counterparty_name,
+          basel_iv_segment,
+          country_iso,
+          internal_rating,
+          external_rating_sp,
+          COALESCE(internal_rating, external_rating_sp) AS final_rating
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_counterparties
+    columns:
+      - name: "counterparty_id"
+        type: "varchar"
+        description: "Identifiant unique de la contrepartie."
+      - name: "internal_rating"
+        type: "varchar"
+        description: "Note de crédit attribuée par les modèles internes."
+      - name: "external_rating_sp"
+        type: "varchar"
+        description: "Note de crédit publique fournie par S&P."
+      - name: "final_rating"
+        type: "varchar"
+        description: "Note de crédit consolidée utilisée pour le pilotage."

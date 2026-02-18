@@ -1,0 +1,150 @@
+# data_products/asset_management/asset_management_dp.yaml
+name: "Post-Trade Fund Services"
+description: |
+  Provides asset managers with curated views for daily and monthly reporting, covering Net Asset Value (NAV), positions, cash flow, and trade reconciliation. This data product serves as the single source of truth for portfolio analysis and client reporting.
+
+  **Business Questions Answered:**
+  1. What is today's final NAV and top 10 holdings for the Global Equity Fund?
+  2. What were the total subscriptions and redemptions for our UK funds yesterday?
+  3. Are there any trades executed today that have not been reconciled against our fund positions?
+  4. How has the NAV per share for the Euro Aggregate Bond fund trended over the last month?
+summary: "Curated views for daily NAV, cash flow, and trade reconciliation."
+
+domain: "Asset Management"
+catalog: ${ASSET_DP_CATALOG}
+schema: ${ASSET_DP_SCHEMA}
+
+owners:
+  - name: "Fund Accounting Team"
+    email: "fund.accounting.uk@bnpp.com"
+  - name: "Client Reporting Services"
+    email: "client.reporting.uk@bnpp.com"
+
+views:
+  - name: "v_daily_nav_position_summary"
+    description: "A summary view providing the latest Net Asset Value (NAV) for each fund, along with key metrics like NAV per share and total cash holdings. This is the primary view for daily valuation and high-level portfolio oversight, essential for fund managers."
+    query: |
+      WITH LatestPositions AS (
+        SELECT
+          p.FundID,
+          s.AssetClass,
+          SUM(p.MarketValueLocal) AS MarketValue,
+          ROW_NUMBER() OVER (PARTITION BY p.FundID ORDER BY p.ReportDate DESC) as rn
+        FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.daily_positions p
+        JOIN ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.securities_master s ON p.SecurityISIN = s.SecurityISIN
+        WHERE p.ReportDate = (SELECT MAX(ReportDate) FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.daily_positions)
+        GROUP BY 1, 2, p.ReportDate
+      ),
+      CashPositions AS (
+        SELECT
+          FundID,
+          MarketValue AS CashValue
+        FROM LatestPositions
+        WHERE AssetClass = 'Cash Equivalent'
+      )
+      SELECT
+        fm.FundName,
+        nav.ReportDate,
+        nav.TotalNAV,
+        nav.NAVPerShare,
+        cp.CashValue,
+        CAST(cp.CashValue AS DOUBLE) * 100 / nav.TotalNAV AS CashPercentage
+      FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.daily_fund_nav nav
+      JOIN ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.funds_master fm ON nav.FundID = fm.FundID
+      LEFT JOIN CashPositions cp ON nav.FundID = cp.FundID
+      WHERE nav.ReportDate = (SELECT MAX(ReportDate) FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.daily_fund_nav)
+      ORDER BY fm.FundName
+    columns:
+      - name: FundName
+        type: varchar
+        description: "The official name of the investment fund."
+      - name: ReportDate
+        type: date
+        description: "The date for which the NAV and position data is reported."
+      - name: TotalNAV
+        type: decimal(38,2)
+        description: "The total Net Asset Value of the fund in its base currency."
+      - name: NAVPerShare
+        type: decimal(18,4)
+        description: "The Net Asset Value per outstanding share of the fund."
+      - name: CashValue
+        type: decimal(38,2)
+        description: "The total market value of cash and cash equivalents held by the fund."
+      - name: CashPercentage
+        type: double
+        description: "The percentage of the fund's total NAV that is held in cash."
+
+  - name: "v_daily_cash_flow_summary"
+    description: "Summarizes all cash movements for each fund for the most recent reporting day, categorized into inflows (subscriptions, dividends) and outflows (redemptions, fees). This is vital for treasury and liquidity management to forecast funding needs."
+    query: |
+      SELECT
+        fm.FundName,
+        ct.TransactionDate,
+        SUM(CASE WHEN ct.Amount > 0 THEN ct.Amount ELSE 0 END) AS TotalInflows,
+        SUM(CASE WHEN ct.Amount < 0 THEN ct.Amount ELSE 0 END) AS TotalOutflows,
+        SUM(ct.Amount) AS NetCashFlow
+      FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.cash_transactions ct
+      JOIN ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.funds_master fm ON ct.FundID = fm.FundID
+      WHERE ct.TransactionDate = (SELECT MAX(TransactionDate) FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.cash_transactions)
+      GROUP BY 1, 2
+      ORDER BY 1
+    columns:
+      - name: FundName
+        type: varchar
+        description: "The name of the investment fund."
+      - name: TransactionDate
+        type: date
+        description: "The date of the cash transactions."
+      - name: TotalInflows
+        type: decimal(38,2)
+        description: "Sum of all positive cash movements (e.g., subscriptions, dividends received)."
+      - name: TotalOutflows
+        type: decimal(38,2)
+        description: "Sum of all negative cash movements (e.g., redemptions, fees paid)."
+      - name: NetCashFlow
+        type: decimal(38,2)
+        description: "The net change in cash for the day (Inflows + Outflows)."
+  
+  - name: "v_trade_reconciliation_exceptions"
+    description: "Identifies trades that were executed but do not appear to have a corresponding position record on their settlement date. This exception report is critical for middle-office teams to investigate and resolve trade settlement failures promptly."
+    query: |
+      SELECT
+        t.TradeID,
+        t.FundID,
+        fm.FundName,
+        t.TradeDate,
+        t.SettlementDate,
+        t.SecurityISIN,
+        t.BuySell,
+        t.Quantity,
+        'Missing Position on Settlement Date' AS ExceptionReason
+      FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.trade_executions t
+      JOIN ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.funds_master fm ON t.FundID = fm.FundID
+      LEFT JOIN ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.daily_positions p
+        ON t.FundID = p.FundID
+        AND t.SecurityISIN = p.SecurityISIN
+        AND t.SettlementDate = p.ReportDate
+      WHERE
+        p.PositionID IS NULL
+        AND t.SettlementDate <= (SELECT MAX(ReportDate) FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.daily_positions)
+        AND t.SettlementDate >= (SELECT MIN(ReportDate) FROM ${ASSET_RAW_CATALOG}.${ASSET_RAW_SCHEMA}.daily_positions)
+      ORDER BY t.SettlementDate DESC
+    columns:
+      - name: TradeID
+        type: varchar
+        description: "The unique identifier for the executed trade."
+      - name: FundID
+        type: varchar
+        description: "The identifier for the fund that executed the trade."
+      - name: FundName
+        type: varchar
+        description: "The name of the fund."
+      - name: SettlementDate
+        type: date
+        description: "The expected date of trade settlement."
+      - name: SecurityISIN
+        type: varchar
+        description: "The ISIN of the security that was traded."
+      - name: ExceptionReason
+        type: varchar
+        description: "A description of why this trade is flagged as an exception."

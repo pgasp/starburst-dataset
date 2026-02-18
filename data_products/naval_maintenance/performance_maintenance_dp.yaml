@@ -1,0 +1,47 @@
+# naval_maintenance/performance_maintenance_dp.yaml
+name: "Analyse Performance Maintenance"
+description: "Couche sémantique pour l'analyse stratégique de la maintenance. Aide à optimiser les coûts, planifier les budgets et évaluer la fiabilité des fournisseurs."
+summary: "KPIs sur les coûts de maintenance et la fiabilité des équipements."
+
+domain: "Maintenance Navale"
+catalog: ${NAVAL_ANALYTICS_DP_CATALOG}
+schema: ${NAVAL_ANALYTICS_DP_SCHEMA}
+
+owners:
+  - name: "Direction de la Maintenance Flotte"
+    email: "dmf.marine@defense.gouv.fr"
+
+views:
+  - name: "v_kpi_cout_par_classe_navire"
+    description: "Agrège les coûts de maintenance (préventive et corrective) sur les 12 derniers mois, groupés par classe de navire."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          f.Classe_Navire,
+          COUNT(j.ID_Maintenance) AS Nombre_Interventions,
+          SUM(CASE WHEN j.Type_Maintenance = 'Corrective' THEN 1 ELSE 0 END) AS Interventions_Correctives,
+          AVG(j.Cout_Reel) AS Cout_Moyen_Par_Intervention,
+          SUM(j.Cout_Reel) AS Cout_Total
+      FROM ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.journal_maintenance j
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.inventaire_equipements_navires i ON j.ID_Equipement_Unique = i.ID_Equipement_Unique
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.flotte_navires f ON i.ID_Navire = f.ID_Navire
+      WHERE CAST(j.Date_Maintenance AS TIMESTAMP) >= (NOW() - INTERVAL '12' MONTH) -- CORRIGÉ : Ajout du CAST
+      GROUP BY f.Classe_Navire
+      ORDER BY Cout_Total DESC
+
+  - name: "v_fiabilite_equipement_par_fabricant"
+    description: "Calcule le taux d'intervention corrective par type d'équipement et par fabricant, servant d'indicateur de fiabilité."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          c.Fabricant,
+          c.Type_Capteur,
+          COUNT(j.ID_Maintenance) AS Total_Interventions,
+          SUM(CASE WHEN j.Type_Maintenance = 'Corrective' THEN 1 ELSE 0 END) AS Interventions_Correctives,
+          CAST(SUM(CASE WHEN j.Type_Maintenance = 'Corrective' THEN 1 ELSE 0 END) AS DOUBLE) * 100 / COUNT(j.ID_Maintenance) AS Taux_Intervention_Corrective_Pct
+      FROM ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.journal_maintenance j
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.inventaire_equipements_navires i ON j.ID_Equipement_Unique = i.ID_Equipement_Unique
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.catalogue_capteurs c ON i.ID_Type_Capteur = c.ID_Type_Capteur
+      GROUP BY c.Fabricant, c.Type_Capteur
+      HAVING COUNT(j.ID_Maintenance) > 10
+      ORDER BY Taux_Intervention_Corrective_Pct DESC, Total_Interventions DESC

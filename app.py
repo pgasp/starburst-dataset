@@ -42,6 +42,8 @@ if 'execution_output' not in st.session_state: st.session_state['execution_outpu
 if 'execution_complete' not in st.session_state: st.session_state['execution_complete'] = False
 if 'execution_command' not in st.session_state: st.session_state['execution_command'] = None
 if 'execution_status_label' not in st.session_state: st.session_state['execution_status_label'] = None
+if 'suggested_improve_prompt' not in st.session_state: st.session_state['suggested_improve_prompt'] = None
+if 'suggested_improve_files' not in st.session_state: st.session_state['suggested_improve_files'] = []
 
 # Initialize Model (One-time)
 if "model" not in st.session_state:
@@ -53,7 +55,6 @@ if "model" not in st.session_state:
 
 
 # --- Execution Runner ---
-# This block executes commands triggered from the Sidebar
 if st.session_state.get('command_to_execute') and not st.session_state.get('is_running'):
     execute_and_stream(st.session_state['command_to_execute'])
 
@@ -62,6 +63,18 @@ if st.session_state.get('command_to_execute') and not st.session_state.get('is_r
 render_sidebar()
 # Capture the suggested prompt from the Quick Start buttons
 suggested_prompt = render_main_content()
+
+# --- Logic: Handle Improvement Prompt from Sidebar ---
+# Initialize local variables for this run
+files_to_attach = []
+
+if st.session_state.get('suggested_improve_prompt'):
+    suggested_prompt = st.session_state['suggested_improve_prompt']
+    files_to_attach = st.session_state.get('suggested_improve_files', [])
+    
+    # Cleanup state to prevent re-triggering
+    st.session_state['suggested_improve_prompt'] = None
+    st.session_state['suggested_improve_files'] = []
 
 
 # --- Execution Log Display ---
@@ -76,9 +89,9 @@ if st.session_state.get('execution_complete') == True:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if "files" in msg:
+        if "files" in msg and msg["files"]:
             for fname, content in msg["files"]:
-                with st.expander(f"📄 {fname}"):
+                with st.expander(f"📄 {fname}", expanded=False): 
                     st.code(content)
 
 
@@ -87,19 +100,39 @@ user_input = st.chat_input("Describe your Data Product...")
 
 if prompt := (user_input or suggested_prompt):
     
-    # 1. User Message
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    # 1. User Message Object
+    user_msg_obj = {"role": "user", "content": prompt}
+    
+    # If this prompt came from the "Improve" button, attach the files
+    if files_to_attach:
+        user_msg_obj["files"] = files_to_attach
+        
+    st.session_state.messages.append(user_msg_obj)
+    
+    # Render immediately
     with st.chat_message("user"):
         st.markdown(prompt)
+        if files_to_attach:
+            for fname, content in files_to_attach:
+                with st.expander(f"📄 {fname}", expanded=False):
+                    st.code(content)
 
     # 2. Assistant Logic
     with st.spinner("Thinking..."):
-        # Load context inside the loop to ensure it's fresh if files were saved
         context, _ = load_project_context()
+
+        # Construct the payload for the LLM
+        # If files are attached, we must explicitly add them to the prompt text sent to the model
+        llm_prompt = prompt
+        if files_to_attach:
+            llm_prompt += "\n\nHere are the current definition files for context:\n"
+            for fname, content in files_to_attach:
+                llm_prompt += f"\n### FILE: {fname}\n{content}\n"
+            llm_prompt += "\n\nPlease analyze these files and suggest improvements or help me modify them."
 
         response_text, st.session_state.chat_session = generate_response(
             st.session_state.model, 
-            prompt, 
+            llm_prompt, 
             context, 
             st.session_state.chat_session
         )
@@ -110,22 +143,19 @@ if prompt := (user_input or suggested_prompt):
         if parsed_files:
             st.success(f"Generated {len(parsed_files)} files")
             
-            # Store files in session state for later saving
             st.session_state['files_to_save'] = parsed_files
-            st.session_state['files_saved'] = False # Reset flag
+            st.session_state['files_saved'] = False 
 
-            # Find the main script path (used for logic, but UI buttons removed)
             data_script_path = next((path for path, content in parsed_files if path.endswith('_data.py')), None)
             st.session_state['data_script_path'] = data_script_path
 
-            # Show files in UI
             files_for_history = []
             for fname, content in parsed_files:
                 files_for_history.append((fname, content))
-                with st.expander(f"📄 {fname}", expanded=True):
+                # UPDATED: expanded=False to hide content by default
+                with st.expander(f"📄 {fname}", expanded=False):
                     st.code(content)
             
-            # Add to history
             st.session_state.messages.append({
                 "role": "assistant", 
                 "content": response_text.split("### FILE:")[0], 
@@ -153,14 +183,11 @@ if st.session_state.get('files_to_save'):
     st.divider()
     st.markdown("### 💾 Save & Review")
     
-    # Simple save button. After saving, the sidebar will refresh.
     if st.button("Save Generated Files to Project", type="primary"):
         save_files(st.session_state['files_to_save'])
         st.toast("Files saved successfully! Check the sidebar.", icon="✅")
         
-        # Clear the pending files and set saved flag
         st.session_state['files_to_save'] = None
         st.session_state['files_saved'] = True
         
-        # Rerun to update the Sidebar Catalog immediately
         st.rerun()

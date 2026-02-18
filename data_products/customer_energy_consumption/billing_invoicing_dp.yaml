@@ -1,0 +1,100 @@
+# customer_energy_consumption/billing_invoicing_dp.yaml
+name: "Facturation et Recouvrement"
+description: |
+  Ce produit de données est dédié à la gestion du cycle de vie de la facturation client. Il fournit des vues sémantiques qui permettent de suivre les factures émises, de surveiller les statuts de paiement, d'analyser les revenus par type de contrat et d'identifier les retards de paiement. En fédérant les données de facturation avec les informations client, il offre une vision claire et exploitable pour les équipes financières, de comptabilité et de recouvrement afin d'optimiser le flux de trésorerie et de gérer les créances.
+
+  **Exemples de questions métier :**
+
+  *   **Gestion du Recouvrement :** "Pouvez-vous m'afficher la liste priorisée des clients ayant des retards de paiement importants, afin que notre service de recouvrement puisse concentrer ses efforts ?"
+      *   **Réponse :** La vue `v_unpaid_invoices_summary` est parfaite pour cela. Elle ne liste pas seulement les impayés, mais calcule aussi le nombre de jours de retard (`DaysOverdue`). Un simple tri sur ce champ donne au service de recouvrement une liste d'actions priorisée pour maximiser l'impact financier.
+summary: "Vues pour le suivi des factures, des paiements et des revenus."
+
+domain: "Customer Energy Consumption"
+catalog: ${ENERGY_BILLING_DP_CATALOG}
+schema: ${ENERGY_BILLING_DP_SCHEMA}
+
+owners:
+  - name: "Finance & Comptabilité"
+    email: "finance@edf-demo.com"
+
+tags:
+  - "Facturation"
+  - "Paiement"
+  - "Revenu"
+  - "Finance"
+
+views:
+  - name: "v_invoice_details_with_customer"
+    description: "Fournit une vue détaillée de chaque facture, enrichie avec les informations du client et du compte correspondants. Cette vue fédérée est la base pour la plupart des analyses financières, car elle connecte directement une transaction financière (la facture) à l'entité client, permettant une analyse complète et un reporting précis."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        i.InvoiceID,
+        i.InvoiceDate,
+        i.AmountBilled,
+        i.PaymentStatus,
+        i.DueDate,
+        i.PaymentDate,
+        a.AccountID,
+        c.CustomerID,
+        c.LastName,
+        c.FirstName,
+        c.Email
+      FROM ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.billing_invoices i
+      JOIN ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.billing_accounts a ON i.AccountID = a.AccountID
+      JOIN ${ENERGY_RAW_CATALOG}.${ENERGY_RAW_SCHEMA}.crm_customers c ON a.CustomerID = c.CustomerID
+    columns:
+      - name: "InvoiceID"
+        type: "varchar"
+        description: "Identifiant unique de la facture."
+      - name: "InvoiceDate"
+        type: "date"
+        description: "Date d'émission de la facture."
+      - name: "AmountBilled"
+        type: "double"
+        description: "Montant total facturé en euros."
+      - name: "PaymentStatus"
+        type: "varchar"
+        description: "Statut du paiement (Payée, En attente, En retard)."
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Identifiant unique du client."
+      - name: "LastName"
+        type: "varchar"
+        description: "Nom de famille du client."
+      
+  - name: "v_unpaid_invoices_summary"
+    description: "Une vue d'action ciblée pour les équipes de recouvrement. Elle liste toutes les factures qui ne sont pas encore payées, en calculant le nombre de jours de retard pour les paiements échus. Cela permet de prioriser les actions de relance et de suivre l'efficacité des campagnes de recouvrement."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        CustomerID,
+        LastName,
+        Email,
+        AccountID,
+        InvoiceID,
+        AmountBilled,
+        DueDate,
+        CASE
+          WHEN PaymentStatus = 'En retard' THEN DATE_DIFF('day', CAST(DueDate AS TIMESTAMP), NOW())
+          ELSE 0
+        END as DaysOverdue
+      FROM ${ENERGY_BILLING_DP_CATALOG}.${ENERGY_BILLING_DP_SCHEMA}.v_invoice_details_with_customer
+      WHERE PaymentStatus IN ('En attente', 'En retard')
+      ORDER BY DaysOverdue DESC
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Identifiant du client ayant un impayé."
+      - name: "InvoiceID"
+        type: "varchar"
+        description: "Identifiant de la facture impayée."
+      - name: "AmountBilled"
+        type: "double"
+        description: "Montant de la facture impayée."
+      - name: "DueDate"
+        type: "date"
+        description: "Date d'échéance de la facture."
+      - name: "DaysOverdue"
+        type: "bigint"
+        description: "Nombre de jours de retard depuis la date d'échéance."

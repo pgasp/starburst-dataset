@@ -1,0 +1,59 @@
+# naval_maintenance/statut_operationnel_dp.yaml
+name: "Statut Opérationnel Maintenance Navale"
+description: "Fournit une vue en temps quasi-réel de l'état des équipements critiques à bord des navires en opération. Destiné aux commandants et aux équipes de maintenance embarquées."
+summary: "Vues pour la supervision des maintenances dues et des alertes critiques."
+
+domain: "Maintenance Navale"
+catalog: ${NAVAL_OPERATIONAL_DP_CATALOG}
+schema: ${NAVAL_OPERATIONAL_DP_SCHEMA}
+
+owners:
+  - name: "Commandement des Opérations"
+    email: "ops.marine@defense.gouv.fr"
+
+views:
+  - name: "v_maintenance_immediate_requise"
+    description: "Liste tous les équipements dont la maintenance préventive est en retard, triés par urgence et par navire en mission."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          f.Nom_Navire,
+          f.Classe_Navire,
+          i.ID_Equipement_Unique,
+          c.Type_Capteur,
+          c.Fabricant,
+          CAST(i.Derniere_Maintenance AS TIMESTAMP) AS Derniere_Maintenance, -- CORRIGÉ : Cast en TIMESTAMP
+          DATE_ADD('day', c.Intervalle_Maintenance_Jours, CAST(i.Derniere_Maintenance AS TIMESTAMP)) AS Prochaine_Maintenance_Due, -- CORRIGÉ : Cast en TIMESTAMP
+          CAST(DATE_DIFF('day', NOW(), DATE_ADD('day', c.Intervalle_Maintenance_Jours, CAST(i.Derniere_Maintenance AS TIMESTAMP))) AS BIGINT) * -1 AS Jours_De_Retard -- CORRIGÉ : Cast en TIMESTAMP
+      FROM ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.inventaire_equipements_navires i
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.flotte_navires f ON i.ID_Navire = f.ID_Navire
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.catalogue_capteurs c ON i.ID_Type_Capteur = c.ID_Type_Capteur
+      WHERE f.Statut_Operationnel = 'En Mission'
+        AND DATE_ADD('day', c.Intervalle_Maintenance_Jours, CAST(i.Derniere_Maintenance AS TIMESTAMP)) < NOW() -- CORRIGÉ : Cast en TIMESTAMP
+      ORDER BY Jours_De_Retard DESC
+
+  - name: "v_capteurs_en_alerte_critique"
+    description: "Identifie les capteurs émettant actuellement une alerte 'CRITIQUE', nécessitant une intervention corrective immédiate."
+    security_mode: "INVOKER"
+    query: |
+      WITH Derniere_Lecture AS (
+          SELECT
+              ID_Equipement_Unique,
+              Timestamp_Lecture,
+              Valeur,
+              Statut_Alerte,
+              ROW_NUMBER() OVER (PARTITION BY ID_Equipement_Unique ORDER BY CAST(Timestamp_Lecture AS TIMESTAMP) DESC) as rn -- CORRIGÉ : Cast pour un tri correct
+          FROM ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.telemetrie_temps_reel
+      )
+      SELECT
+          f.Nom_Navire,
+          dl.ID_Equipement_Unique,
+          c.Type_Capteur,
+          CAST(dl.Timestamp_Lecture AS TIMESTAMP) AS Derniere_Alerte_Timestamp, -- CORRIGÉ : Cast en TIMESTAMP
+          dl.Valeur AS Valeur_Alerte
+      FROM Derniere_Lecture dl
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.inventaire_equipements_navires i ON dl.ID_Equipement_Unique = i.ID_Equipement_Unique
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.flotte_navires f ON i.ID_Navire = f.ID_Navire
+      JOIN ${NAVAL_RAW_CATALOG}.${NAVAL_RAW_SCHEMA}.catalogue_capteurs c ON i.ID_Type_Capteur = c.ID_Type_Capteur
+      WHERE dl.rn = 1 AND dl.Statut_Alerte = 'CRITIQUE'
+      ORDER BY f.Nom_Navire, CAST(dl.Timestamp_Lecture AS TIMESTAMP) DESC -- CORRIGÉ : Cast pour un tri correct

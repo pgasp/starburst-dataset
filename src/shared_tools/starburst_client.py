@@ -110,6 +110,9 @@ class StarburstClient:
         """Create a new data product."""
         url = f"{self.base_url}/api/v1/dataProduct/products"
         resp = self.session.post(url, json=payload)
+        print(f"Create product response status: {resp.status_code}"
+              )
+        print( f"Create product response text: {resp.text}")    
         resp.raise_for_status()
         return resp.json()
 

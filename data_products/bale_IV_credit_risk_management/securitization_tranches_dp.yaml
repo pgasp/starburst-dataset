@@ -1,0 +1,85 @@
+# --- TITRISATION & RÉTENTION DE RISQUE BÂLE IV ---
+name: "Titrisation & Rétention de Risque Bâle IV"
+description: "Ce Data Product est dédié à l'analyse des expositions de titrisation, une activité fortement impactée par Bâle IV. Il permet d'évaluer la charge en capital des tranches conservées au bilan, en appliquant les nouvelles pondérations réglementaires. Le suivi de ces expositions est crucial pour gérer l'impact du plancher de capital (Output Floor)."
+summary: "Vues pour l'analyse de performance et de RWA des tranches de titrisation."
+
+domain: "BALE IV"
+catalog: ${RISK_SECURITIZATION_DP_CATALOG}
+schema: ${RISK_SECURITIZATION_DP_SCHEMA}
+
+owners:
+  - name: "Financements Structurés & Titrisation"
+    email: "securitization.team@casa.com"
+
+views:
+  - name: "v_securitization_tranche_performance"
+    description: "Calcule le montant des actifs pondérés (RWA) pour chaque tranche de titrisation détenue par la banque. La vue applique les pondérations de risque Bâle IV qui varient fortement selon la séniorité de la tranche (Senior, Mezzanine, Junior), illustrant l'impact direct sur la consommation de capital."
+    query: |
+      WITH RWA_SEC_Mapping AS (
+          SELECT 'Senior' AS type, 0.20 AS rwa_weight
+          UNION ALL SELECT 'Mezzanine' AS type, 0.60 AS rwa_weight
+          UNION ALL SELECT 'Junior' AS type, 1.25 AS rwa_weight
+          UNION ALL SELECT 'Equity' AS type, 12.50 AS rwa_weight -- Corresponds to a 100% capital charge
+      )
+      SELECT
+          t.deal_id,
+          t.tranche_id,
+          t.tranche_type,
+          t.retained_amount_eur,
+          m.rwa_weight AS regulatory_risk_weight,
+          t.retained_amount_eur * m.rwa_weight AS tranche_rwa
+      FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_securitization_tranches t
+      JOIN RWA_SEC_Mapping m ON t.tranche_type = m.type
+      WHERE t.retained_amount_eur > 0
+    columns:
+      - name: "tranche_id"
+        type: "varchar"
+        description: "Identifiant unique de la tranche."
+      - name: "tranche_type"
+        type: "varchar"
+        description: "Séniorité de la tranche (Senior, Mezzanine, etc.)."
+      - name: "retained_amount_eur"
+        type: "double"
+        description: "Montant de la tranche conservé au bilan de la banque."
+      - name: "regulatory_risk_weight"
+        type: "double"
+        description: "Pondération de risque prudentielle selon Bâle IV."
+      - name: "tranche_rwa"
+        type: "double"
+        description: "Actifs pondérés par le risque pour cette tranche."
+
+  - name: "v_securitization_deal_summary"
+    description: "Fournit une vue agrégée par opération de titrisation (deal). Elle consolide l'exposition totale retenue et la consommation de RWA, offrant ainsi un outil de pilotage pour la direction sur la performance et le coût en capital de l'activité de titrisation."
+    query: |
+       WITH Tranche_RWA AS (
+            WITH RWA_SEC_Mapping AS (
+              SELECT 'Senior' AS type, 0.20 AS rwa_weight
+              UNION ALL SELECT 'Mezzanine' AS type, 0.60 AS rwa_weight
+              UNION ALL SELECT 'Junior' AS type, 1.25 AS rwa_weight
+              UNION ALL SELECT 'Equity' AS type, 12.50 AS rwa_weight
+            )
+            SELECT
+                t.deal_id,
+                t.retained_amount_eur,
+                t.retained_amount_eur * m.rwa_weight AS rwa
+            FROM ${RISK_RAW_CATALOG}.${RISK_RAW_SCHEMA}.raw_securitization_tranches t
+            JOIN RWA_SEC_Mapping m ON t.tranche_type = m.type
+            WHERE t.retained_amount_eur > 0
+       )
+       SELECT
+           deal_id,
+           SUM(retained_amount_eur) AS total_retained_exposure,
+           SUM(rwa) AS total_rwa
+       FROM Tranche_RWA
+       GROUP BY 1
+       ORDER BY 2 DESC
+    columns:
+      - name: "deal_id"
+        type: "varchar"
+        description: "Identifiant de l'opération de titrisation."
+      - name: "total_retained_exposure"
+        type: "double"
+        description: "Exposition totale conservée au bilan pour cette opération."
+      - name: "total_rwa"
+        type: "double"
+        description: "Consommation totale de RWA pour cette opération."

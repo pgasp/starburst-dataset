@@ -1,0 +1,109 @@
+# asset_management/asset_management_performance_dp.yaml
+name: "Asset Management Fund Performance & Analytics"
+description: |
+  A comprehensive Data Product providing daily and historical views on fund performance, Net Asset Value (NAV) evolution, and portfolio composition. It is designed for portfolio managers and client service teams to monitor investment strategies, analyze asset and country allocations, and generate key metrics for monthly and quarterly reporting packs.
+
+  **Business Questions Answered:**
+  1. What is the latest official Net Asset Value (NAV) for each of our funds?
+  2. How is our 'Global Equity Fund' allocated across different asset classes like Equities and Bonds?
+  3. Can I get the current NAV per share for all funds to prepare the daily client summary report?
+summary: "Daily and historical views on fund performance, NAV, and portfolio allocation."
+
+domain: "Asset Management"
+catalog: ${ASSET_MGMT_PERFORMANCE_DP_CATALOG}
+schema: ${ASSET_MGMT_PERFORMANCE_DP_SCHEMA}
+
+owners:
+  - name: "Portfolio Management Team"
+    email: "pm@bnpp-cib.com"
+
+views:
+  - name: "v_daily_fund_summary"
+    description: "Provides the latest daily snapshot of each fund's Net Asset Value (NAV), total units in circulation, and NAV per share. This is the primary view for daily valuation and high-level fund monitoring."
+    security_mode: "INVOKER"
+    query: |
+      WITH LatestDate AS (
+        SELECT MAX(Report_Date) AS max_date FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_nav_positions
+      ),
+      RankedPositions AS (
+          SELECT
+              Fund_Code,
+              Report_Date,
+              NAV,
+              Units,
+              ROW_NUMBER() OVER(PARTITION BY Fund_Code, Report_Date ORDER BY ISIN) as rn
+          FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_nav_positions
+          WHERE Report_Date = (SELECT max_date FROM LatestDate)
+      )
+      SELECT
+          rp.Fund_Code,
+          fm.Fund_Name,
+          rp.Report_Date,
+          rp.NAV AS Total_NAV,
+          rp.Units AS Total_Units,
+          rp.NAV / rp.Units AS NAV_Per_Share
+      FROM RankedPositions rp
+      JOIN ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.funds_master fm ON rp.Fund_Code = fm.Fund_Code
+      WHERE rp.rn = 1
+      ORDER BY rp.Fund_Code
+    columns:
+      - name: "Fund_Code"
+        type: "varchar"
+        description: "Unique identifier for the investment fund."
+      - name: "Fund_Name"
+        type: "varchar"
+        description: "The legal name of the investment fund."
+      - name: "Report_Date"
+        type: "date"
+        description: "The date for which the NAV is calculated."
+      - name: "Total_NAV"
+        type: "double"
+        description: "The total Net Asset Value of the fund in its base currency."
+      - name: "Total_Units"
+        type: "double"
+        description: "Total number of shares or units in circulation."
+      - name: "NAV_Per_Share"
+        type: "double"
+        description: "The Net Asset Value per share/unit."
+
+  - name: "v_portfolio_asset_allocation"
+    description: "Aggregates the market value of holdings by asset class for each fund on the most recent reporting date. This view is crucial for assessing portfolio diversification and adherence to investment mandates."
+    security_mode: "INVOKER"
+    query: |
+      WITH LatestDate AS (
+        SELECT MAX(Report_Date) AS max_date FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_nav_positions
+      ),
+      CurrentPositions AS (
+          SELECT
+              Fund_Code,
+              Asset_Class,
+              Market_Value_Local,
+              NAV
+          FROM ${ASSET_MGMT_RAW_CATALOG}.${ASSET_MGMT_RAW_SCHEMA}.daily_nav_positions
+          WHERE Report_Date = (SELECT max_date FROM LatestDate)
+      )
+      SELECT
+          Fund_Code,
+          (SELECT max_date FROM LatestDate) AS Report_Date,
+          Asset_Class,
+          SUM(Market_Value_Local) AS Total_Market_Value,
+          CAST(SUM(Market_Value_Local) * 100.0 / ANY_VALUE(NAV) AS DECIMAL(5, 2)) AS Allocation_Pct
+      FROM CurrentPositions
+      GROUP BY Fund_Code, Asset_Class
+      ORDER BY Fund_Code, Allocation_Pct DESC
+    columns:
+      - name: "Fund_Code"
+        type: "varchar"
+        description: "Unique identifier for the investment fund."
+      - name: "Report_Date"
+        type: "date"
+        description: "The 'as of' date for the allocation breakdown."
+      - name: "Asset_Class"
+        type: "varchar"
+        description: "The classification of the financial instrument (e.g., Equity, Bond)."
+      - name: "Total_Market_Value"
+        type: "double"
+        description: "The sum of market values for all securities within that asset class."
+      - name: "Allocation_Pct"
+        type: "decimal(5, 2)"
+        description: "The portfolio weight of the asset class as a percentage of total NAV."

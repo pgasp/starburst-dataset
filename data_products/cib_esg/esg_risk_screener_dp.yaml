@@ -1,0 +1,82 @@
+# cib_esg/esg_risk_screener_dp.yaml
+name: "CIB ESG Risk Screener"
+description: "A critical risk management tool designed to provide automated ESG-related risk flags for corporate clients. This data product analyzes third-party ESG scores, controversy data, and sector-specific risks to identify clients that may pose a reputational or financial threat, ensuring compliance with the bank's sustainable finance framework during credit underwriting."
+summary: "Views to automatically flag high-risk clients during credit approval."
+domain: "CIB ESG"
+catalog: ${CIB_ESG_RISK_DP_CATALOG}
+schema: ${CIB_ESG_RISK_DP_SCHEMA}
+owners:
+  - name: "Credit Risk Management"
+    email: "credit.risk@cib.com"
+
+views:
+  - name: "v_high_risk_client_alerts"
+    description: "Identifies clients with low ESG scores (e.g., below 40), active controversies, or those operating in high-impact sectors like Oil & Gas. This view is the primary source for the automated flagging system in the credit workflow."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        c.client_id,
+        c.client_name,
+        c.industry_sector,
+        r.overall_esg_score,
+        r.has_controversies_flag
+      FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.clients_master c
+      JOIN ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.esg_risk_ratings r ON c.client_id = r.client_id
+      WHERE r.overall_esg_score < 40
+         OR r.has_controversies_flag = TRUE
+         OR c.industry_sector = 'Oil & Gas'
+    columns:
+      - name: "client_id"
+        type: "varchar"
+        description: "Unique identifier for the corporate client."
+      - name: "client_name"
+        type: "varchar"
+        description: "Legal name of the corporate client."
+      - name: "industry_sector"
+        type: "varchar"
+        description: "Primary industry sector of the client, e.g., 'Oil & Gas'."
+      - name: "overall_esg_score"
+        type: "bigint"
+        description: "The client's latest overall ESG score from a third-party provider."
+      - name: "has_controversies_flag"
+        type: "boolean"
+        description: "Flag indicating if the client is involved in any significant ESG-related controversies."
+
+  - name: "v_credit_applications_pending_review"
+    description: "Lists pending credit applications from clients flagged as high-risk, providing underwriters with a focused work queue. It joins active applications with the high-risk client list for immediate visibility and prioritization."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        ca.application_id,
+        ca.application_date,
+        ca.application_amount,
+        hr.client_id,
+        hr.client_name,
+        hr.industry_sector,
+        hr.overall_esg_score
+      FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.credit_applications ca
+      JOIN "v_high_risk_client_alerts" hr ON ca.client_id = hr.client_id
+      WHERE ca.status = 'Pending'
+      ORDER BY ca.application_date ASC
+    columns:
+      - name: "application_id"
+        type: "varchar"
+        description: "Unique ID for the credit application."
+      - name: "application_date"
+        type: "date"
+        description: "Date the credit application was submitted."
+      - name: "application_amount"
+        type: "bigint"
+        description: "The requested credit amount in USD."
+      - name: "client_id"
+        type: "varchar"
+        description: "Identifier of the high-risk client who submitted the application."
+      - name: "client_name"
+        type: "varchar"
+        description: "Name of the high-risk client."
+      - name: "industry_sector"
+        type: "varchar"
+        description: "Industry of the high-risk client."
+      - name: "overall_esg_score"
+        type: "bigint"
+        description: "The ESG score that contributed to the high-risk flag."

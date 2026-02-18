@@ -61,7 +61,7 @@ def construct_payload(config, domain_id):
             "name": v['name'], 
             "description": v.get('description', ''),
             "definitionQuery": v['query'], 
-            "viewSecurityMode": v.get('security_mode', 'INVOKER'), 
+            # "viewSecurityMode": v.get('security_mode', 'INVOKER'), 
             "columns": v.get('columns', []), 
             "markedForDeletion": False
         })

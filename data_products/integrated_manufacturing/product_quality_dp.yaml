@@ -2,8 +2,19 @@
 
 # --- PRODUCT & QUALITY ASSURANCE DATA PRODUCT (PLM/QMS) ---
 name: "Manufacturing Product Design & Quality"
-description: "Semantic layer for tracking product revision quality, inspection failure rates, and linking defects to specific components."
-summary: "Views for QMS Defect Tracking and PLM Integrity"
+description: |
+  This data product provides a semantic layer for tracking product revision quality, analyzing inspection failure rates, and linking defects to specific components and machines. It is essential for quality assurance and product lifecycle management.
+
+  **Key Objectives:**
+  - **Drive Continuous Improvement:** Analyze defect rates by part revision to validate design changes.
+  - **Enhance Quality Control:** Pinpoint machines or processes that contribute to higher defect rates.
+  - **Isolate Root Causes:** Federate quality data with MES and PLM systems to find the source of failures.
+
+  **Business Questions Answered:**
+  1. Which specific component revision is causing the highest number of quality failures?
+  2. Is there a particular machine producing a disproportionately high percentage of defective parts?
+  3. Who are our most effective quality inspectors in terms of both inspection volume and failures identified?
+summary: "Views for QMS Defect Tracking, Machine Performance, and PLM Integrity"
 
 # DATA PRODUCT DESTINATION (Schema 2: Quality)
 domain: "Integrated Manufacturing"
@@ -12,7 +23,14 @@ schema: ${MANUF_QUALITY_DP_SCHEMA}
 
 owners:
   - name: "Quality Assurance & PLM"
-    email: "quality@mfg-corp.com"
+    email: "pascal.gasp@starburstdata.com"
+
+tags:
+  - "Quality"
+  - "QMS"
+  - "PLM"
+  - "Defect Analysis"
+  - "Continuous Improvement"
 
 # ==============================================================================
 # SEMANTIC VIEWS
@@ -21,7 +39,7 @@ views:
   
   # 1. Component Defect Rate by Revision (QMS/PLM)
   - name: "v_component_defect_rate"
-    description: "Calculates the failure rate for a component based on QMS inspection results, broken down by PLM revision."
+    description: "Calculates the failure rate for a component based on QMS inspection results, broken down by PLM revision. This helps product managers validate whether design changes have successfully improved quality over time."
     security_mode: "INVOKER" 
     
     query: |
@@ -42,16 +60,56 @@ views:
       - name: "PartID"
         type: "varchar"
         description: "Unique identifier for the component."
+      - name: "PartName"
+        type: "varchar"
+        description: "The common name of the part."
       - name: "PartRevision"
         type: "varchar"
         description: "The current design revision from PLM."
+      - name: "TotalChecks"
+        type: "bigint"
+        description: "Total number of times this part revision was inspected."
+      - name: "FailCount"
+        type: "bigint"
+        description: "Number of times this part revision failed inspection."
       - name: "DefectRate_Pct"
         type: "double"
         description: "Percentage of inspections that resulted in a failure."
 
-  # 2. Quality Check Throughput by Inspector (QMS)
+  # 2. Machine Defect Analysis (QMS/MES Federation)
+  - name: "v_machine_defect_analysis"
+    description: "Analyzes inspection failure rates by the machine that produced the part, helping to identify manufacturing equipment that may require maintenance or calibration to improve output quality and reduce waste."
+    security_mode: "INVOKER" 
+    
+    query: |
+      SELECT
+          wo.MachineID,
+          COUNT(i.InspectionID) AS TotalInspections,
+          SUM(CASE WHEN i.Result = 'FAIL' THEN 1 ELSE 0 END) AS TotalFailures,
+          CAST(SUM(CASE WHEN i.Result = 'FAIL' THEN 1 ELSE 0 END) AS DOUBLE) * 100 / COUNT(i.InspectionID) AS FailureRate_Pct
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.qms_inspection_records i
+      JOIN ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.mes_work_orders wo ON i.WorkOrderID = wo.WorkOrderID
+      GROUP BY wo.MachineID
+      HAVING COUNT(i.InspectionID) > 20
+      ORDER BY FailureRate_Pct DESC
+      
+    columns:
+      - name: "MachineID"
+        type: "varchar"
+        description: "Unique identifier for the production machine."
+      - name: "TotalInspections"
+        type: "bigint"
+        description: "Total number of parts from this machine that were inspected."
+      - name: "TotalFailures"
+        type: "bigint"
+        description: "Number of failed inspections for parts from this machine."
+      - name: "FailureRate_Pct"
+        type: "double"
+        description: "Percentage of inspections from this machine's work orders that resulted in a failure."
+
+  # 3. Quality Check Throughput by Inspector (QMS)
   - name: "v_inspector_throughput"
-    description: "Monitors the number of quality checks completed by each inspector."
+    description: "Monitors the number of quality checks completed by each inspector, providing a metric for team performance and helping to manage workload distribution within the quality assurance department."
     security_mode: "INVOKER" 
     
     query: |
@@ -70,3 +128,6 @@ views:
       - name: "ChecksCompleted"
         type: "bigint"
         description: "Total number of inspections completed."
+      - name: "FailuresReported"
+        type: "bigint"
+        description: "Total number of failures identified by the inspector."

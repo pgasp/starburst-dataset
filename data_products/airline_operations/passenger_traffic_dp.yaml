@@ -1,0 +1,72 @@
+# airline_operations/passenger_traffic_dp.yaml
+name: "Airline Passenger Traffic & Revenue"
+description: "Focuses on passenger booking patterns, route popularity, and revenue generation. This product is crucial for commercial planning, marketing, and network strategy teams to understand demand, optimize pricing, and evaluate the financial performance of different routes. It combines flight data with booking information to deliver key business insights."
+summary: "Passenger load factors, route revenue, and booking trends."
+
+domain: "Airline Operations"
+catalog: ${AIRLINE_TRAFFIC_DP_CATALOG}
+schema: ${AIRLINE_TRAFFIC_DP_SCHEMA}
+
+owners:
+  - name: "Commercial Planning"
+    email: "planning@fly-example.com"
+
+views:
+  - name: "v_route_passenger_and_revenue_summary"
+    description: "Calculates total passengers, average fare, and total revenue for each flight route. This is essential for identifying the most profitable and popular routes in the network, guiding decisions on capacity and frequency."
+    query: |
+      SELECT
+          f.OriginAirportCode,
+          f.DestinationAirportCode,
+          COUNT(b.BookingID) AS TotalPassengers,
+          CAST(AVG(b.Fare) AS DECIMAL(10, 2)) AS AverageFare,
+          CAST(SUM(b.Fare) AS DECIMAL(18, 2)) AS TotalRevenue
+      FROM
+          ${AIRLINE_RAW_CATALOG}.${AIRLINE_RAW_SCHEMA}.flights f
+      JOIN
+          ${AIRLINE_RAW_CATALOG}.${AIRLINE_RAW_SCHEMA}.bookings b ON f.FlightID = b.FlightID
+      WHERE f.Cancelled = false
+      GROUP BY
+          1, 2
+      ORDER BY
+          TotalRevenue DESC
+    columns:
+      - name: "OriginAirportCode"
+        type: "varchar"
+        description: "The IATA code of the flight's origin airport."
+      - name: "DestinationAirportCode"
+        type: "varchar"
+        description: "The IATA code of the flight's destination airport."
+      - name: "TotalPassengers"
+        type: "bigint"
+        description: "The total number of passengers who have booked flights on this route."
+      - name: "AverageFare"
+        type: "decimal(10, 2)"
+        description: "The average price of a ticket paid by passengers on this route."
+      - name: "TotalRevenue"
+        type: "decimal(18, 2)"
+        description: "The sum of all fares paid by passengers, representing the total revenue for this route."
+
+  - name: "v_daily_booking_trends"
+    description: "Aggregates booking activity by date, showing the daily count of new bookings and the total fare value. This view helps in monitoring sales performance and identifying booking spikes or trends over time."
+    query: |
+      SELECT
+          CAST(BookingTimestamp AS DATE) AS BookingDate,
+          COUNT(BookingID) AS NumberOfBookings,
+          CAST(SUM(Fare) AS DECIMAL(18, 2)) AS TotalBookingValue
+      FROM
+          ${AIRLINE_RAW_CATALOG}.${AIRLINE_RAW_SCHEMA}.bookings
+      GROUP BY
+          1
+      ORDER BY
+          1 DESC
+    columns:
+      - name: "BookingDate"
+        type: "date"
+        description: "The calendar date on which the bookings were made."
+      - name: "NumberOfBookings"
+        type: "bigint"
+        description: "The total count of individual bookings made on the given date."
+      - name: "TotalBookingValue"
+        type: "decimal(18, 2)"
+        description: "The total revenue from all fares booked on the given date."

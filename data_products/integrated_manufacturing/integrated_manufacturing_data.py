@@ -10,6 +10,7 @@ import os
 import sys
 import logging
 import argparse
+from collections import defaultdict
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -61,7 +62,24 @@ def get_config():
 def generate_manufacturing_data():
     logging.info("Starting Integrated Manufacturing data generation...")
     
-    # --- 1. PLM_Product_Master (Parts Master) ---
+    # --- 1. MES_Machine_Master (NEW) ---
+    machines = []
+    machine_types = ['CNC Mill', 'Laser Cutter', 'Assembly Robot', 'Stamping Press']
+    locations = ['Factory A-1', 'Factory A-2', 'Factory B-1']
+    for i in range(1, NUM_MACHINES + 1):
+        install_date = fake.date_time_between(start_date='-5y', end_date='-1y')
+        last_maintenance = fake.date_time_between(start_date=install_date, end_date='now')
+        machines.append({
+            "MachineID": f"MCH-{i}",
+            "MachineType": random.choice(machine_types),
+            "Location": random.choice(locations),
+            "InstallDate": install_date,
+            "LastMaintenanceDate": last_maintenance
+        })
+    mes_machine_master_df = pd.DataFrame(machines)
+    logging.info(f"Generated {len(mes_machine_master_df)} machine master records.")
+
+    # --- 2. PLM_Product_Master (Parts Master) ---
     parts = []
     part_types = ['Engine Assembly', 'Chassis Frame', 'Sensor', 'Control Unit', 'Raw Material']
     for i in range(NUM_PARTS):
@@ -75,7 +93,27 @@ def generate_manufacturing_data():
         })
     plm_product_master_df = pd.DataFrame(parts); part_ids = plm_product_master_df['PartID'].tolist()
 
-    # --- 2. MES_Work_Orders ---
+    # --- 3. SCM_Supplier_Invoices (Generated earlier to create a lookup) ---
+    scm_supplier_invoices = []
+    for i in range(NUM_SCM_ORDERS):
+        scm_supplier_invoices.append({
+            "InvoiceID": f"SUPINV-{i + 1}",
+            "PartID": random.choice(part_ids),
+            "Supplier": fake.company(),
+            "PurchasePrice": round(random.uniform(10, 1000), 2),
+            "DeliveryLeadTime_Days": random.randint(3, 45),
+            "InvoiceDate": fake.date_between(start_date='-1y', end_date='now')
+        })
+    scm_supplier_invoices_df = pd.DataFrame(scm_supplier_invoices)
+
+    # --- Create a lookup map of PartID -> [Suppliers] ---
+    part_to_suppliers_map = defaultdict(list)
+    for _, row in scm_supplier_invoices_df.iterrows():
+        if row['Supplier'] not in part_to_suppliers_map[row['PartID']]:
+            part_to_suppliers_map[row['PartID']].append(row['Supplier'])
+    logging.info("Created PartID-to-Supplier mapping for quality tracking.")
+
+    # --- 4. MES_Work_Orders ---
     statuses = ['Scheduled', 'In_Progress', 'Completed', 'Canceled']
     work_orders = []
     for i in range(NUM_WORK_ORDERS):
@@ -94,14 +132,19 @@ def generate_manufacturing_data():
         if row['Status'] == 'Completed':
             mes_work_orders_df.at[index, 'ActualQty'] = row['PlannedQty'] + random.randint(-5, 5)
 
-    # --- 3. QMS_Inspection_Records ---
+    # --- 5. QMS_Inspection_Records (MODIFIED) ---
     check_types = ['Dimensional', 'Surface Finish', 'Torque Spec', 'Visual']
     qms_inspection_records = []
     for i in range(NUM_INSPECTIONS):
+        part_id = random.choice(part_ids)
+        # Ensure the part has a supplier; if not, assign a default
+        possible_suppliers = part_to_suppliers_map.get(part_id, [fake.company()])
+        
         qms_inspection_records.append({
             "InspectionID": f"INSP-{i + 1}",
             "WorkOrderID": random.choice(wo_ids),
-            "ComponentPartID": random.choice(part_ids),
+            "ComponentPartID": part_id,
+            "SupplierSource": random.choice(possible_suppliers), # NEW FIELD
             "CheckType": random.choice(check_types),
             "Result": random.choices(['PASS', 'FAIL'], weights=[95, 5], k=1)[0],
             "InspectorID": f"USR-{random.randint(10, 50)}",
@@ -109,10 +152,9 @@ def generate_manufacturing_data():
         })
     qms_inspection_records_df = pd.DataFrame(qms_inspection_records)
 
-    # --- 4. SCADA_Sensor_Telemetry (FUTURE-DATED FOR PREDICTIVE DEMO) ---
+    # --- 6. SCADA_Sensor_Telemetry (FUTURE-DATED FOR PREDICTIVE DEMO) ---
     sensor_types = ['Spindle_Temp', 'Tool_Vibration', 'Pressure_Bar', 'Motor_Amps']
     
-    # Define future date range variables (Current time up to 1 year ahead)
     start_future = datetime.now()
     end_future = datetime.now() + timedelta(days=365)
     
@@ -122,7 +164,7 @@ def generate_manufacturing_data():
         is_anomaly = random.choices([True, False], weights=[3, 97], k=1)[0]
         
         scada_sensor_telemetry.append({
-            "ReadingTime": fake.date_time_between(start_date=start_future, end_date=end_future), # CORRECTED LINE
+            "ReadingTime": fake.date_time_between(start_date=start_future, end_date=end_future),
             "MachineID": f"MCH-{random.randint(1, NUM_MACHINES)}",
             "SensorType": sensor_type,
             "Value": round(random.uniform(5, 150), 4),
@@ -130,7 +172,7 @@ def generate_manufacturing_data():
         })
     scada_sensor_telemetry_df = pd.DataFrame(scada_sensor_telemetry)
 
-    # --- 5. CRM_Customer_Orders ---
+    # --- 7. CRM_Customer_Orders ---
     customer_types = ['Dealer', 'Direct Retail']
     crm_customer_orders = []
     for i in range(10000):
@@ -143,23 +185,11 @@ def generate_manufacturing_data():
             "SalesValue": round(random.uniform(1000, 50000), 2)
         })
     crm_customer_orders_df = pd.DataFrame(crm_customer_orders)
-    
-    # --- 6. SCM_Supplier_Invoices ---
-    scm_supplier_invoices = []
-    for i in range(NUM_SCM_ORDERS):
-        scm_supplier_invoices.append({
-            "InvoiceID": f"SUPINV-{i + 1}",
-            "PartID": random.choice(part_ids),
-            "Supplier": fake.company(),
-            "PurchasePrice": round(random.uniform(10, 1000), 2),
-            "DeliveryLeadTime_Days": random.randint(3, 45),
-            "InvoiceDate": fake.date_between(start_date='-1y', end_date='now')
-        })
-    scm_supplier_invoices_df = pd.DataFrame(scm_supplier_invoices)
 
-    logging.info(f"Generated {len(plm_product_master_df)} parts, {len(mes_work_orders_df)} work orders, and {len(scada_sensor_telemetry_df)} machine readings (future-dated).")
+    logging.info(f"Generated {len(plm_product_master_df)} parts, {len(mes_work_orders_df)} work orders, and {len(qms_inspection_records_df)} inspection records with supplier tracking.")
     
     return {
+        "mes_machine_master": mes_machine_master_df,
         "plm_product_master": plm_product_master_df, 
         "mes_work_orders": mes_work_orders_df, 
         "qms_inspection_records": qms_inspection_records_df,

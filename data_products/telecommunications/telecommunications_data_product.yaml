@@ -1,0 +1,180 @@
+# telecommunications/telecommunications_data_product.yaml
+name: "Telecommunications Customer & Network Operations"
+description: "A federated data product providing a 360-degree view of customer accounts and their interaction with network infrastructure. It links BSS data (customers, subscriptions, billing) with OSS data (network traffic, service tickets, and equipment load) to enable analysis of customer experience, network performance, and revenue assurance. It is the single source of truth for understanding how network events impact customer satisfaction and business outcomes."
+summary: "Unified views for customer account status, network health, and service quality."
+
+domain: "Telecommunications"
+catalog: ${TELECOM_DP_CATALOG}
+schema: ${TELECOM_DP_SCHEMA}
+
+owners:
+  - name: "Network Operations & Customer Relations"
+    email: "ops-relations@telefonica-corp.com"
+
+tags:
+  - bss
+  - oss
+  - customer_360
+  - network_analytics
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+
+  - name: "v_customer_360_profile"
+    description: "A comprehensive view combining customer details, their active subscriptions, and billing status, now including a risk indicator for overdue payments. This is crucial for CRM systems to quickly understand a customer's entire relationship, from service plans to financial history. This enhanced view enables more effective customer service and proactive retention efforts by identifying at-risk accounts."
+    security_mode: "INVOKER"
+    query: |
+      WITH latest_invoice AS (
+        SELECT
+          s.CustomerID,
+          s.SubscriptionID,
+          b.PaymentStatus,
+          b.InvoiceDate,
+          ROW_NUMBER() OVER(PARTITION BY s.SubscriptionID ORDER BY b.InvoiceDate DESC) as rn
+        FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.bss_subscriptions s
+        JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.bss_billing_invoices b ON s.SubscriptionID = b.SubscriptionID
+      ),
+      invoice_summary AS (
+          SELECT
+              s.CustomerID,
+              COUNT(b.InvoiceID) FILTER (WHERE b.PaymentStatus = 'Overdue') as TotalOverdueInvoices
+          FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.bss_subscriptions s
+          JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.bss_billing_invoices b ON s.SubscriptionID = b.SubscriptionID
+          GROUP BY 1
+      )
+      SELECT
+        c.CustomerID,
+        c.FullName,
+        c.AccountStatus,
+        s.SubscriptionID,
+        s.PlanName,
+        s.MonthlyCharge,
+        s.Status as SubscriptionStatus,
+        li.InvoiceDate as LastInvoiceDate,
+        li.PaymentStatus as LastPaymentStatus,
+        COALESCE(i_sum.TotalOverdueInvoices, 0) as TotalOverdueInvoices
+      FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.bss_customers c
+      JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.bss_subscriptions s ON c.CustomerID = s.CustomerID
+      LEFT JOIN latest_invoice li ON s.SubscriptionID = li.SubscriptionID AND li.rn = 1
+      LEFT JOIN invoice_summary i_sum ON c.CustomerID = i_sum.CustomerID
+      WHERE s.Status = 'Active'
+    columns:
+      - name: "CustomerID"
+        type: "varchar"
+        description: "Unique identifier for the customer."
+      - name: "FullName"
+        type: "varchar"
+        description: "The full name of the customer."
+      - name: "AccountStatus"
+        type: "varchar"
+        description: "The current status of the customer's main account (e.g., Active, Suspended)."
+      - name: "LastPaymentStatus"
+        type: "varchar"
+        description: "The payment status of the most recent invoice for this subscription."
+      - name: "TotalOverdueInvoices"
+        type: "bigint"
+        description: "The total count of all invoices currently marked as 'Overdue' for the customer."
+
+  - name: "v_cell_tower_load_analysis"
+    description: "This new operational view provides a real-time snapshot of cell tower performance by joining equipment status with granular tower details. It highlights the most heavily-used towers based on the number of connected users, helping network engineers to identify potential capacity bottlenecks, prioritize upgrades, and troubleshoot performance degradation in specific geographic areas before they lead to widespread customer complaints."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        e.EquipmentID,
+        e.Location,
+        e.Status as EquipmentStatus,
+        d.Band,
+        d.Power_dBm,
+        d.ConnectedUsers
+      FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.oss_network_equipment e
+      JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.oss_cell_tower_details d ON e.EquipmentID = d.EquipmentID
+      WHERE e.EquipmentType = 'CellTower'
+      ORDER BY d.ConnectedUsers DESC
+    columns:
+      - name: "EquipmentID"
+        type: "varchar"
+        description: "The unique identifier for the cell tower."
+      - name: "Location"
+        type: "varchar"
+        description: "The physical location (City, Country) of the cell tower."
+      - name: "EquipmentStatus"
+        type: "varchar"
+        description: "The current operational status of the tower (e.g., Online, Offline)."
+      - name: "Band"
+        type: "varchar"
+        description: "The primary frequency band the tower is operating on (e.g., 5G-NR, LTE-A)."
+      - name: "ConnectedUsers"
+        type: "bigint"
+        description: "The number of unique users currently connected to the tower."
+
+  - name: "v_network_service_quality_by_equipment"
+    description: "This view correlates customer-reported service issues with network equipment status and location, providing a direct link between operational network health and customer experience. It helps network operations teams prioritize maintenance by identifying equipment linked to multiple service tickets or showing an abnormal status, thereby proactively addressing potential widespread outages and improving overall customer satisfaction and retention."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+        t.TicketID,
+        t.CustomerID,
+        t.IssueType,
+        t.Status as TicketStatus,
+        CAST(t.OpenDate AS TIMESTAMP) AS OpenDate,
+        e.EquipmentID,
+        e.EquipmentType,
+        e.Status as EquipmentStatus,
+        e.Location as EquipmentLocation
+      FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.oss_service_tickets t
+      JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.oss_network_equipment e ON t.EquipmentID = e.EquipmentID
+      WHERE t.IssueType != 'Billing Inquiry'
+    columns:
+      - name: "TicketID"
+        type: "varchar"
+        description: "The unique identifier for the customer service ticket."
+      - name: "OpenDate"
+        type: "timestamp"
+        description: "The timestamp when the service ticket was created."
+      - name: "EquipmentID"
+        type: "varchar"
+        description: "The network equipment associated with the service ticket."
+      - name: "EquipmentType"
+        type: "varchar"
+        description: "The type of network equipment (e.g., CellTower, FiberNode)."
+      - name: "EquipmentStatus"
+        type: "varchar"
+        description: "The operational status of the equipment."
+      - name: "EquipmentLocation"
+        type: "varchar"
+        description: "The physical location of the network equipment."
+
+  - name: "v_high_value_customer_network_usage"
+    description: "This analytical view identifies network usage patterns for high-value customers, defined by their monthly subscription charges. It helps in network capacity planning and targeted marketing by showing which services, like video streaming or gaming, are most heavily used by the most profitable customer segments. This insight allows for infrastructure investments to be aligned with revenue-generating activities."
+    security_mode: "INVOKER"
+    query: |
+      WITH high_value_subs AS (
+        SELECT SubscriptionID, PlanName, MonthlyCharge
+        FROM ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.bss_subscriptions
+        WHERE MonthlyCharge >= 75.00 AND Status = 'Active'
+      )
+      SELECT
+        hvs.SubscriptionID,
+        hvs.PlanName,
+        hvs.MonthlyCharge,
+        t.TrafficType,
+        SUM(t.DataVolume_GB) as TotalDataVolume_GB
+      FROM high_value_subs hvs
+      JOIN ${TELECOM_RAW_CATALOG}.${TELECOM_RAW_SCHEMA}.oss_network_traffic t ON hvs.SubscriptionID = t.SubscriptionID
+      GROUP BY 1, 2, 3, 4
+      ORDER BY TotalDataVolume_GB DESC
+    columns:
+      - name: "SubscriptionID"
+        type: "varchar"
+        description: "Unique identifier for the high-value subscription."
+      - name: "PlanName"
+        type: "varchar"
+        description: "The name of the premium service plan."
+      - name: "TrafficType"
+        type: "varchar"
+        description: "The category of network traffic (e.g., VideoStreaming, Gaming)."
+      - name: "TotalDataVolume_GB"
+        type: "double"
+        description: "The total gigabytes of data consumed by this traffic type for the subscription."

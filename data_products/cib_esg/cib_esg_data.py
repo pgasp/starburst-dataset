@@ -1,3 +1,5 @@
+# cib_esg/cib_esg_data.py
+
 import pandas as pd
 import numpy as np
 from faker import Faker
@@ -6,12 +8,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 import os
 import sys
-# NEW IMPORT
-import argparse
-# Note: The original file had complex imports. We maintain the original structure
-# but add argparse and modify the main block for consistency.
-from dotenv from dotead_doteivport load_dotenv
 import logging
+import argparse
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -21,51 +19,24 @@ logging.basicConfig(
 )
 # ------------------------------
 
-# Load environment variables
-load_dotenv()
+# --- External Utility Imports ---
+try:
+    from shared_tools.lakehouse_utils import setup_schema, upload_to_starburst_parallel
+    from shared_tools.deploy import scan_and_deploy
+    from shared_tools.env_utils import load_project_env
+except ImportError as e:
+    logging.critical(f"FATAL ERROR: Could not import utility functions. Did you run 'pip install -e .' from the project root? Details: {e}")
+    sys.exit(1)
+
+# Load environment variables (from project root and local .env files)
+load_project_env(__file__)
+
 fake = Faker()
 
-# --- External Utility Imports ---
-# 1. Add the parent directory to the system path to find the 'utils' folder
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-# 2. Import the required utility functions
-# NOTE: Assuming lakehouse_utils is in a 'utils' directory one level up.
-def import_or_exit(module_path, import_names, error_message):
-    try:
-        # Note: This is simplified from the original code structure but serves the purpose
-        if module_path == "utils.lakehouse_utils":
-            from shared_tools.lakehouse_utils import setup_schema, upload_to_starburst_parallel
-            return [setup_schema, upload_to_starburst_parallel]
-        elif module_path == "dataproducts.deploy":
-            from shared_tools.deploy import deploy_dataproduct_file
-            return [deploy_dataproduct_file]
-
-        # Fallback to general import if shared_tools isn't installed as an egg
-        module = __import__(module_path, fromlist=import_names)
-        return [getattr(module, name) for name in import_names]
-    except ImportError as e:
-        logging.critical(f"{error_message}\nDetails: {e}")
-        sys.exit(1)
-
-setup_schema, upload_to_starburst_parallel = import_or_exit(
-    "utils.lakehouse_utils",
-    ["setup_schema", "upload_to_starburst_parallel"],
-    "FATAL ERROR: Could not import utility functions from utils/lakehouse_utils. Please ensure the path and file exist."
-)
-
-deploy_dataproduct_file, = import_or_exit(
-    "dataproducts.deploy",
-    ["deploy_dataproduct_file"],
-    "FATAL ERROR: Could not import utility functions from dataproducts/deploy. Please ensure the path and file exist."
-)
-
-
-
 # --- Configuration (Volume) ---
-NUM_CLIENTS = 500
-NUM_DEALS = 800
-NUM_RATINGS = 1000 
+NUM_CLIENTS = 2000
+NUM_CREDIT_APPS = 5000
+NUM_DEALS = 4000
 
 def get_config():
     """Loads configuration from environment variables for the RAW TARGET."""
@@ -73,69 +44,98 @@ def get_config():
         config = {
             "host": os.environ["SB_HOST"], "port": os.environ["SB_PORT"],
             "user": os.environ["SB_USER"], "password": os.environ["SB_PASSWORD"],
-            # RAW DATA TARGET (Using ESG_RAW variables)
-            "catalog": os.environ["ESG_RAW_CATALOG"], 
-            "schema": os.environ["ESG_RAW_SCHEMA"],
-            "location": os.environ["ESG_SB_SCHEMA_LOCATION"]
+            "catalog": os.environ["CIB_ESG_RAW_CATALOG"],
+            "schema": os.environ["CIB_ESG_RAW_SCHEMA"],
+            "location": os.environ["CIB_ESG_SB_SCHEMA_LOCATION"]
         }
         return config
     except KeyError as e:
-        logging.error(f"--- ERROR: Missing configuration for ESG: {e} ---")
+        logging.error(f"--- ERROR: Missing configuration for CIB ESG: {e} ---")
+        logging.error("Please check for SB_HOST in your root .env file, and the CIB_ESG variables in your local cib_esg/.env file.")
         sys.exit(1)
 
-def generate_esg_data():
+def generate_cib_esg_data():
     logging.info("Starting CIB ESG data generation...")
-    today = datetime.now().date()
-    
-    # --- 1. ClientEntities (Base Dimension) ---
+
+    # --- 1. Clients Master ---
+    sectors = ['Oil & Gas', 'Utilities', 'Technology', 'Healthcare', 'Industrials', 'Consumer Goods', 'Financials', 'Renewable Energy']
     clients = []
-    industries = ['Energy', 'Manufacturing', 'Technology', 'Healthcare', 'Financials']
     for i in range(NUM_CLIENTS):
-        clients.append({"ClientID": f"CL-{1000 + i}", "CompanyName": fake.company(), "Industry": random.choice(industries), "TotalRevenue": round(random.uniform(500000, 500000000), 2)})
-    clients_df = pd.DataFrame(clients); client_ids = clients_df['ClientID'].tolist()
+        clients.append({
+            "client_id": f"C{1000 + i}",
+            "client_name": fake.company(),
+            "industry_sector": random.choice(sectors),
+            "hq_country": fake.country(),
+            "annual_revenue_usd": random.randint(50000000, 10000000000)
+        })
+    clients_master_df = pd.DataFrame(clients)
+    client_ids = clients_master_df['client_id'].tolist()
 
-    # --- 2. ESG_Ratings (Time Series Data, used for latest score lookup) ---
-    ratings = []
-    for _ in range(NUM_RATINGS):
-        esg_e = random.randint(30, 95); esg_s = random.randint(30, 95); esg_g = random.randint(30, 95)
-        overall = round((esg_e + esg_s + esg_g) / 3, 2)
-        ratings.append({"RatingID": f"RT-{len(ratings) + 1}", "ClientID": random.choice(client_ids), "Date": fake.date_between(start_date='-5y', end_date='today'), "OverallScore": overall, "EScore": esg_e, "SScore": esg_s, "GScore": esg_g})
-    ratings_df = pd.DataFrame(ratings)
+    # --- 2. Credit Applications ---
+    app_statuses = ['Approved', 'Rejected', 'Pending']
+    credit_applications = []
+    for i in range(NUM_CREDIT_APPS):
+        credit_applications.append({
+            "application_id": f"APP-{50000 + i}",
+            "client_id": random.choice(client_ids),
+            "application_amount": random.randint(1000000, 500000000),
+            "status": random.choice(app_statuses),
+            "application_date": fake.date_between(start_date='-2y', end_date='today')
+        })
+    credit_applications_df = pd.DataFrame(credit_applications)
 
-    # --- 3. Financing_Deals (Transaction Fact, links clients to E/G metrics) ---
+    # --- 3. ESG Risk Ratings ---
+    providers = ['MSCI', 'Sustainalytics', 'ISS']
+    esg_ratings = []
+    for cid in client_ids:
+        has_controversy = random.choices([True, False], weights=[15, 85], k=1)[0]
+        overall_score = random.randint(10, 95) if not has_controversy else random.randint(5, 50)
+        esg_ratings.append({
+            "client_id": cid,
+            "rating_provider": random.choice(providers),
+            "overall_esg_score": overall_score,
+            "environmental_score": random.randint(10, 95),
+            "social_score": random.randint(10, 95),
+            "governance_score": random.randint(10, 95),
+            "has_controversies_flag": has_controversy,
+            "rating_as_of_date": fake.date_between(start_date='-1y', end_date='-1m')
+        })
+    esg_risk_ratings_df = pd.DataFrame(esg_ratings)
+
+    # --- 4. Deals Master ---
+    deal_types = ['Green Bond', 'Sustainability-Linked Loan', 'General Corporate Purpose', 'Social Bond']
     deals = []
-    deal_types = ['Loan', 'Bond', 'Equity']; proceeds = ['General Corporate', 'Renewable Energy Project', 'Social Housing', 'M&A']
     for i in range(NUM_DEALS):
-        deals.append({"DealID": f"DEAL-{2000 + i}", "ClientID": random.choice(client_ids), "DealDate": fake.date_between(start_date='-3y', end_date='today'), "DealType": random.choice(deal_types), "Amount": round(random.uniform(1000000, 500000000), 2), "Sector": random.choice(industries), "UseOfProceeds": random.choice(proceeds)})
-    deals_df = pd.DataFrame(deals); deal_ids = deals_df['DealID'].tolist()
+        deals.append({
+            "deal_id": f"DEAL-{20000 + i}",
+            "client_id": random.choice(client_ids),
+            "deal_type": random.choices(deal_types, weights=[20, 15, 60, 5], k=1)[0],
+            "deal_value_usd": random.randint(50000000, 1000000000),
+            "close_date": fake.date_time_between(start_date='-3y', end_date='now')
+        })
+    deals_master_df = pd.DataFrame(deals)
 
-    # --- 4. E_Metrics (Environmental Data, linked to deals for project finance) ---
-    e_metrics = []
-    for i, did in enumerate(deal_ids):
-        is_green = deals_df[deals_df['DealID'] == did]['UseOfProceeds'].iloc[0] == 'Renewable Energy Project'
-        ghg_base = 5000 if not is_green else 100; renew_base = 0.1 if not is_green else 0.8
-        e_metrics.append({"MetricID": f"E-{i + 1}", "DealID": did, "Year": random.randint(2022, 2025), "GHG_Emissions_Scope1": round(ghg_base * random.uniform(0.9, 1.1), 2), "GHG_Emissions_Scope2": round(ghg_base * random.uniform(0.5, 0.8), 2), "WaterUse": round(random.uniform(500, 50000), 2), "EnergyMix_Renewable": round(renew_base * random.uniform(0.8, 1.2), 2)})
-    e_metrics_df = pd.DataFrame(e_metrics)
+    # --- 5. Portfolio Emissions ---
+    emissions = []
+    for cid in client_ids:
+        emissions.append({
+            "client_id": cid,
+            "reporting_year": 2023,
+            "scope1_emissions_tco2e": random.randint(1000, 500000),
+            "scope2_emissions_tco2e": random.randint(5000, 2000000),
+            "scope3_emissions_tco2e": random.randint(10000, 10000000)
+        })
+    portfolio_emissions_df = pd.DataFrame(emissions)
 
-    # --- 5. S_Metrics (Social Data, used for granular social view) ---
-    s_metrics = []
-    for i, cid in enumerate(client_ids):
-        s_metrics.append({"SocialMetricID": f"S-{i + 1}", "ClientID": cid, "Year": random.randint(2022, 2025), "EmployeeTurnover": round(random.uniform(0.05, 0.25), 2), "DiversityScore": round(random.uniform(0.30, 0.90), 2), "SafetyIncidents": random.randint(0, 5)})
-    s_metrics_df = pd.DataFrame(s_metrics)
+    logging.info(f"Generated {len(clients_master_df)} clients and related ESG datasets.")
 
-    # --- 6. G_Metrics (Governance Data, used for granular governance view) ---
-    g_metrics = []
-    for i, cid in enumerate(client_ids):
-        g_metrics.append({"GovMetricID": f"G-{i + 1}", "ClientID": cid, "BoardDiversityPct": round(random.uniform(0.10, 0.40), 2), "AuditCommitteeIndependence": round(random.uniform(0.80, 1.00), 2), "CEO_PayRatio": random.randint(5, 50)})
-    g_metrics_df = pd.DataFrame(g_metrics)
-
-    logging.info(f"Generated {len(clients_df)} clients and {len(deals_df)} financing deals.")
-    
     return {
-        "client_entities": clients_df, "esg_ratings": ratings_df, "financing_deals": deals_df,
-        "e_metrics": e_metrics_df, "s_metrics": s_metrics_df, "g_metrics": g_metrics_df
+        "clients_master": clients_master_df,
+        "credit_applications": credit_applications_df,
+        "esg_risk_ratings": esg_risk_ratings_df,
+        "deals_master": deals_master_df,
+        "portfolio_emissions": portfolio_emissions_df
     }
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate CIB ESG data and deploy Data Products.")
@@ -143,31 +143,25 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = get_config()
-    # Create the SQLAlchemy engine string for connection (without schema/catalog yet)
     engine_string = f"trino://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['catalog']}"
-    
+
     try:
         engine = create_engine(engine_string)
-        
+
         if not args.deploy_only:
-            # 1. SETUP SCHEMA: Use externalized utility function
             if setup_schema(engine, config['catalog'], config['schema'], config['location']):
-                
-                # 2. GENERATE DATA
-                data_tables = generate_esg_data()
-                
-                # 3. UPLOAD DATA: Use externalized utility function for parallel upload
+                data_tables = generate_cib_esg_data()
                 upload_to_starburst_parallel(engine, config['schema'], data_tables)
             else:
                 logging.error("Schema setup failed. Cannot proceed to deploy Data Products.")
                 sys.exit(1)
         else:
             logging.info("Deployment only mode: Skipping schema setup and data generation/upload.")
-            
-        # 4. DEPLOY DATAPRODUCT: Use externalized utility function  
-        # Note: This file uses a specific deploy function for the YAML filename.
-        deploy_dataproduct_file("cib_esg_data_product.yaml")
-        logging.info("ESG data pipeline executed successfully.")
-        
+
+        deploy_path = os.path.dirname(os.path.abspath(__file__))
+        scan_and_deploy(deploy_path)
+
+        logging.info("CIB ESG data pipeline executed successfully.")
+
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")

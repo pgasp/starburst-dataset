@@ -1,8 +1,18 @@
 # integrated_manufacturing/operational_process_dp.yaml
-
 # --- OPERATIONAL PROCESS & SCADA DATA PRODUCT (MES/PLC/SCADA) ---
 name: "Manufacturing Realtime Operational Status"
-description: "Semantic layer for MES execution and real-time machine health monitoring via SCADA telemetry (PLC data). Focuses on Optimization & Factory Performance."
+description: |
+  This data product provides a real-time semantic layer over MES work order execution and SCADA machine telemetry. It is designed for operations managers and maintenance engineers to monitor and optimize factory floor performance.
+
+  **Key Objectives:**
+  - **Monitor Real-Time Production:** Track the status and progress of active work orders.
+  - **Optimize Factory Floor Performance:** Identify and address potential production bottlenecks.
+  - **Enable Proactive Maintenance:** Use live sensor data to flag equipment health issues before they cause failures.
+
+  **Business Questions Answered:**
+  1. Which machines are showing the highest rate of anomalies and may require preventative maintenance?
+  2. What is the live list of all work orders currently in progress to understand our factory's production load?
+  3. Are there specific sensors on our machines that consistently operate outside of normal parameters, indicating a potential failure point?
 summary: "Views for Machine Health and Work Order Execution"
 
 # DATA PRODUCT DESTINATION (Schema 1: Operational)
@@ -12,7 +22,15 @@ schema: ${MANUF_OPERATIONAL_DP_SCHEMA}
 
 owners:
   - name: "Maintenance Engineering"
-    email: "mes_ops@mfg-corp.com"
+    email: "pascal.gasp@starburstdata.com"
+
+tags:
+  - "Real-Time"
+  - "MES"
+  - "SCADA"
+  - "Operations"
+  - "Machine Health"
+  - "IoT"
 
 # ==============================================================================
 # SEMANTIC VIEWS
@@ -21,7 +39,7 @@ views:
   
   # 1. Real-Time Machine Health (SCADA/PLC Analysis)
   - name: "v_machine_telemetry_health"
-    description: "Calculates the average reading and anomaly rate per machine/sensor type over the last 12 months."
+    description: "Calculates the average reading and anomaly rate per machine/sensor type over the last 12 months, helping to identify equipment that is operating outside of expected norms and may be at risk of failure."
     security_mode: "INVOKER" 
     
     query: |
@@ -51,7 +69,7 @@ views:
 
   # 2. Work Order Execution Status (MES)
   - name: "v_work_order_execution_status"
-    description: "Lists all work orders currently in progress, linked to the responsible machine."
+    description: "Provides a real-time snapshot of all production work orders that are currently in progress, allowing operations managers to monitor the factory floor's workload and identify potential bottlenecks in the production schedule."
     security_mode: "INVOKER" 
     
     query: |
@@ -70,6 +88,18 @@ views:
       - name: "WorkOrderID"
         type: "varchar"
         description: "Unique production work order ID."
+      - name: "TopLevelPartID"
+        type: "varchar"
+        description: "The identifier for the final product being assembled."
+      - name: "PlannedQty"
+        type: "bigint"
+        description: "The target quantity for this work order."
       - name: "MachineID"
         type: "varchar"
         description: "Machine currently executing the work order."
+      - name: "ScheduledStart"
+        type: "timestamp(3)"
+        description: "The planned start time for the work order."
+      - name: "Status"
+        type: "varchar"
+        description: "The current status of the work order."

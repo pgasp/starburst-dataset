@@ -1,0 +1,241 @@
+name: "Full-Stack Observability Insights"
+description: "Provides a correlated view across application, compute, data, and network layers to enable root cause analysis, performance monitoring, and business impact assessment."
+summary: "Correlated views for application errors, latency trends, infrastructure health, and business impact."
+
+# Data Product Destination
+domain: "Observability"
+catalog: ${OBS_DP_CATALOG}
+schema: ${OBS_DP_SCHEMA}
+
+owners:
+  - name: "Site Reliability Engineering"
+    email: "sre-team@example.com"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Business Impact Analysis
+  - name: "v_application_error_business_impact"
+    description: "Quantifies the business impact of application errors by aggregating lost cart value and affected customers for each failing service and endpoint."
+    security_mode: "INVOKER"
+    
+    query: |
+      SELECT
+          service_name,
+          endpoint,
+          http_status,
+          COUNT(*) AS error_count,
+          SUM(cart_value) AS total_lost_cart_value,
+          COUNT(DISTINCT customer_id) AS affected_customers
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces
+      WHERE http_status >= 500
+      GROUP BY 1, 2, 3
+      ORDER BY total_lost_cart_value DESC
+      
+    columns:
+      - name: "service_name"
+        type: "varchar"
+        description: "The microservice that reported the error."
+      - name: "total_lost_cart_value"
+        type: "double"
+        description: "Sum of cart values for all failed transactions for this service."
+      - name: "affected_customers"
+        type: "bigint"
+        description: "Count of unique customers impacted by errors from this service."
+
+  # 2. Proactive Performance Monitoring
+  - name: "v_service_latency_percentiles"
+    description: "Calculates daily P95 latency for successful requests to identify performance degradation trends before they become critical errors. High P95 latency indicates a poor user experience for a significant number of users."
+    security_mode: "INVOKER"
+
+    query: |
+      SELECT
+          DATE_TRUNC('day', CAST("timestamp" AS TIMESTAMP)) AS observation_day,
+          service_name,
+          endpoint,
+          COUNT(*) as request_count,
+          AVG(latency_ms) as avg_latency_ms,
+          approx_percentile(latency_ms, 0.95) AS p95_latency_ms
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces
+      WHERE http_status < 500
+      GROUP BY 1, 2, 3
+      ORDER BY observation_day DESC, p95_latency_ms DESC
+
+    columns:
+      - name: "observation_day"
+        type: "timestamp(3) with time zone"
+        description: "The day for which the latency metrics are aggregated."
+      - name: "service_name"
+        type: "varchar"
+        description: "The microservice being measured."
+      - name: "p95_latency_ms"
+        type: "double"
+        description: "The 95th percentile request latency in milliseconds. 5% of users experienced this latency or worse."
+      - name: "avg_latency_ms"
+        type: "double"
+        description: "The average latency for this service on the given day."
+
+  # 3. **NEW** Granular Root Cause Analysis
+  - name: "v_root_cause_app_compute_correlation"
+    description: "Finds specific application errors that occurred within a 1-minute window of high CPU or memory utilization on the same server, providing direct evidence for root cause analysis."
+    security_mode: "INVOKER"
+
+    query: |
+      SELECT
+          at.trace_id,
+          at."timestamp" as error_timestamp,
+          at.service_name,
+          at.http_status,
+          at.error_message,
+          cm.server_hostname,
+          cm.cpu_utilization_pct,
+          cm.memory_utilization_pct
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces AS at
+      JOIN ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.compute_metrics AS cm
+        ON at.server_hostname = cm.server_hostname
+       AND cm."timestamp" BETWEEN (CAST(at."timestamp" AS TIMESTAMP) - INTERVAL '1' MINUTE) AND (CAST(at."timestamp" AS TIMESTAMP) + INTERVAL '1' MINUTE)
+      WHERE at.http_status >= 500
+        AND (cm.cpu_utilization_pct > 90.0 OR cm.memory_utilization_pct > 90.0)
+      ORDER BY at."timestamp" DESC
+
+    columns:
+      - name: "trace_id"
+        type: "varchar"
+        description: "The unique identifier of the failed application request."
+      - name: "error_timestamp"
+        type: "timestamp(3) with time zone"
+        description: "Timestamp when the application error occurred."
+      - name: "server_hostname"
+        type: "varchar"
+        description: "The server where both the app error and the resource spike occurred."
+      - name: "cpu_utilization_pct"
+        type: "double"
+        description: "CPU utilization on the server at the time of the error."
+
+  # 4. Real-time Monitoring
+  - name: "v_current_component_health_status"
+    description: "Provides a near real-time snapshot of the health of critical system components based on the latest metrics within a 15-minute window."
+    security_mode: "INVOKER"
+    
+    query: |
+      SELECT 'COMPUTE' AS layer, 
+             server_hostname AS component, 
+             CASE 
+                WHEN AVG(cpu_utilization_pct) > 90 OR AVG(memory_utilization_pct) > 90 THEN 'CRITICAL' 
+                ELSE 'HEALTHY' 
+             END AS status, 
+             MAX(CAST("timestamp" AS TIMESTAMP)) AS last_seen 
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.compute_metrics 
+      WHERE CAST("timestamp" AS TIMESTAMP) > NOW() - INTERVAL '15' MINUTE 
+      GROUP BY 1, 2
+      
+      UNION ALL
+      
+      SELECT 'DATABASE' AS layer, 
+             database_name AS component, 
+             CASE 
+                WHEN AVG(lock_wait_ms) > 100 THEN 'DEGRADED' 
+                ELSE 'HEALTHY' 
+             END AS status, 
+             MAX(CAST("timestamp" AS TIMESTAMP)) AS last_seen 
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.db_query_logs 
+      WHERE CAST("timestamp" AS TIMESTAMP) > NOW() - INTERVAL '15' MINUTE 
+      GROUP BY 1, 2
+
+      UNION ALL
+      
+      SELECT 'NETWORK' AS layer, 
+             device_id AS component, 
+             MAX_BY(health_status, CAST("timestamp" AS TIMESTAMP)) AS status,
+             MAX(CAST("timestamp" AS TIMESTAMP)) AS last_seen 
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.network_device_health 
+      WHERE CAST("timestamp" AS TIMESTAMP) > NOW() - INTERVAL '15' MINUTE 
+      GROUP BY 1, 2
+      
+    columns:
+      - name: "layer"
+        type: "varchar"
+        description: "The part of the tech stack (e.g., COMPUTE, DATABASE)."
+      - name: "component"
+        type: "varchar"
+        description: "The specific component being monitored (e.g., a hostname or database name)."
+      - name: "status"
+        type: "varchar"
+        description: "The calculated health status (e.g., HEALTHY, DEGRADED, CRITICAL)."
+      - name: "last_seen"
+        type: "timestamp(3) with time zone"
+        description: "The timestamp of the latest metric received from this component."
+
+# ==============================================================================
+# MATERIALIZED VIEWS (FOR PERFORMANCE)
+# ==============================================================================
+materialized_views:
+
+  # 5. Root Cause Analysis (Materialized)
+  - name: "mv_correlated_system_health_by_hour"
+    description: "Aggregates key health metrics from all layers (application, compute, DB, network) into hourly snapshots to help correlate failures across the stack. Materialized for high-performance dashboarding."
+    refresh_interval: "1h"
+    
+    query: |
+      WITH AppErrors AS (
+          SELECT
+              DATE_TRUNC('hour', CAST("timestamp" AS TIMESTAMP)) AS metric_hour,
+              COUNT(*) AS application_error_count
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces
+          WHERE http_status >= 500
+          GROUP BY 1
+      ),
+      ComputeStress AS (
+          SELECT
+              DATE_TRUNC('hour', CAST("timestamp" AS TIMESTAMP)) AS metric_hour,
+              AVG(cpu_utilization_pct) AS avg_cpu_utilization,
+              AVG(memory_utilization_pct) AS avg_memory_utilization
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.compute_metrics
+          GROUP BY 1
+      ),
+      DBLatency AS (
+          SELECT
+              DATE_TRUNC('hour', CAST("timestamp" AS TIMESTAMP)) AS metric_hour,
+              AVG(execution_time_ms + lock_wait_ms) AS avg_db_latency_ms,
+              SUM(CASE WHEN lock_wait_ms > 0 THEN 1 ELSE 0 END) as db_lock_events
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.db_query_logs
+          GROUP BY 1
+      ),
+      NetworkIssues AS (
+          SELECT
+              DATE_TRUNC('hour', CAST("timestamp" AS TIMESTAMP)) AS metric_hour,
+              COUNT(*) AS network_degradation_events
+          FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.network_device_health
+          WHERE health_status <> 'HEALTHY'
+          GROUP BY 1
+      )
+      SELECT
+          COALESCE(ae.metric_hour, cs.metric_hour, dl.metric_hour, ni.metric_hour) AS metric_hour,
+          COALESCE(ae.application_error_count, 0) AS application_error_count,
+          cs.avg_cpu_utilization,
+          dl.avg_db_latency_ms,
+          COALESCE(dl.db_lock_events, 0) as db_lock_events,
+          COALESCE(ni.network_degradation_events, 0) AS network_degradation_events
+      FROM AppErrors ae
+      FULL JOIN ComputeStress cs ON ae.metric_hour = cs.metric_hour
+      FULL JOIN DBLatency dl ON COALESCE(ae.metric_hour, cs.metric_hour) = dl.metric_hour
+      FULL JOIN NetworkIssues ni ON COALESCE(ae.metric_hour, cs.metric_hour, dl.metric_hour) = ni.metric_hour
+      
+    columns:
+      - name: "metric_hour"
+        type: "timestamp(3) with time zone"
+        description: "The hourly time bucket for the aggregated metrics."
+      - name: "application_error_count"
+        type: "bigint"
+        description: "Total number of HTTP 5xx errors during this hour."
+      - name: "avg_cpu_utilization"
+        type: "double"
+        description: "Average CPU utilization across all servers during this hour."
+      - name: "avg_db_latency_ms"
+        type: "double"
+        description: "Average total DB query time (execution + lock wait) during this hour."
+      - name: "network_degradation_events"
+        type: "bigint"
+        description: "Number of network devices reporting a DEGRADED or OFFLINE status."

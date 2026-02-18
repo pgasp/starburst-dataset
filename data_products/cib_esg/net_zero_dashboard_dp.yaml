@@ -1,0 +1,69 @@
+# cib_esg/net_zero_dashboard_dp.yaml
+name: "CIB Net Zero Portfolio Dashboard"
+description: "A strategic data product for senior leadership and compliance teams to monitor the bank's progress towards its publicly stated 2050 net-zero commitments. It aggregates financed emissions across the entire corporate lending portfolio and tracks the decarbonization trajectory against science-based targets and interim goals for regulatory reporting and strategic planning."
+summary: "Visualizes portfolio proximity to 2050 decarbonization targets."
+domain: "CIB ESG"
+catalog: ${CIB_ESG_STRATEGY_DP_CATALOG}
+schema: ${CIB_ESG_STRATEGY_DP_SCHEMA}
+owners:
+  - name: "Corporate Strategy & Sustainability"
+    email: "strategy@cib.com"
+
+views:
+  - name: "v_financed_emissions_by_sector"
+    description: "Calculates the total financed emissions (Scope 1 and 2) for each industry sector in the portfolio. This allows strategists to identify high-emission sectors that require targeted engagement and transition financing efforts to meet climate targets."
+    security_mode: "INVOKER"
+    query: |
+      SELECT
+          c.industry_sector,
+          SUM(e.scope1_emissions_tco2e + e.scope2_emissions_tco2e) as total_financed_emissions_tco2e
+      FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.portfolio_emissions e
+      JOIN ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.clients_master c ON e.client_id = c.client_id
+      GROUP BY 1
+      ORDER BY 2 DESC
+    columns:
+      - name: "industry_sector"
+        type: "varchar"
+        description: "The industry sector of the client portfolio."
+      - name: "total_financed_emissions_tco2e"
+        type: "bigint"
+        description: "The sum of Scope 1 and 2 emissions in tonnes of CO2 equivalent for the sector."
+
+  - name: "v_portfolio_temperature_alignment"
+    description: "Provides a simplified, high-level metric indicating the portfolio's alignment with global climate goals. This view simulates a complex methodology with a rule-based approach based on sector-level emissions intensity for executive dashboards."
+    security_mode: "INVOKER"
+    query: |
+      WITH SectorEmissions AS (
+        SELECT
+            c.industry_sector,
+            SUM(e.scope1_emissions_tco2e + e.scope2_emissions_tco2e) as total_emissions,
+            SUM(c.annual_revenue_usd) as total_revenue
+        FROM ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.portfolio_emissions e
+        JOIN ${CIB_ESG_RAW_CATALOG}.${CIB_ESG_RAW_SCHEMA}.clients_master c ON e.client_id = c.client_id
+        GROUP BY 1
+      )
+      SELECT
+        industry_sector,
+        total_emissions,
+        CAST(total_emissions AS DOUBLE) / total_revenue AS emissions_intensity,
+        CASE
+            WHEN industry_sector = 'Oil & Gas' THEN 'Above 3.0°C'
+            WHEN industry_sector IN ('Utilities', 'Industrials') THEN '2.5°C - 3.0°C'
+            WHEN industry_sector = 'Renewable Energy' THEN 'Below 1.5°C'
+            ELSE '1.5°C - 2.0°C'
+        END as implied_temperature_rise
+      FROM SectorEmissions
+      ORDER BY emissions_intensity DESC
+    columns:
+      - name: "industry_sector"
+        type: "varchar"
+        description: "The industry sector being analyzed."
+      - name: "total_emissions"
+        type: "bigint"
+        description: "Total financed Scope 1 and 2 emissions for the sector."
+      - name: "emissions_intensity"
+        type: "double"
+        description: "A calculated ratio of total emissions to total client revenue in the sector."
+      - name: "implied_temperature_rise"
+        type: "varchar"
+        description: "A simplified, categorical rating of the sector's alignment with global climate goals."

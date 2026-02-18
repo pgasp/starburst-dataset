@@ -1,0 +1,68 @@
+name: "Business Performance Monitoring"
+description: "Focuses on the business impact of application performance, providing key metrics on customer experience, transaction success, and financial implications of errors. This data product helps product managers and business leaders understand how system health translates directly to revenue and customer satisfaction, enabling data-driven decisions on where to prioritize engineering efforts."
+summary: "Views on customer impact, lost revenue, and service latency KPIs."
+
+# Data Product Destination
+domain: "Observability"
+catalog: ${OBS_BUSINESS_DP_CATALOG}
+schema: ${OBS_BUSINESS_DP_SCHEMA}
+
+owners:
+  - name: "Product & Business Analytics"
+    email: "biz-analytics@example.com"
+
+views:
+  # 1. Business Impact of Application Errors
+  - name: "v_application_error_business_impact"
+    description: "Quantifies the business impact of application errors by aggregating lost cart value and affected customers for each failing service and endpoint. This view is critical for prioritizing bug fixes based on their direct financial impact on the company."
+    security_mode: "INVOKER"
+    
+    query: |
+      SELECT
+          service_name,
+          endpoint,
+          http_status,
+          COUNT(*) AS error_count,
+          SUM(cart_value) AS total_lost_cart_value,
+          COUNT(DISTINCT customer_id) AS affected_customers
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces
+      WHERE http_status >= 500
+      GROUP BY 1, 2, 3
+      ORDER BY total_lost_cart_value DESC
+      
+    columns:
+      - name: "service_name"
+        type: "varchar"
+        description: "The microservice that reported the error."
+      - name: "total_lost_cart_value"
+        type: "double"
+        description: "Sum of cart values for all failed transactions for this service."
+      - name: "affected_customers"
+        type: "bigint"
+        description: "Count of unique customers impacted by errors from this service."
+
+  # 2. Service Latency and User Experience
+  - name: "v_service_latency_percentiles"
+    description: "Calculates daily P95 latency for successful requests to identify performance degradation trends. High P95 latency indicates a poor user experience for a significant number of users, which can be a leading indicator of customer churn or dissatisfaction."
+    security_mode: "INVOKER"
+
+    query: |
+      SELECT
+          DATE_TRUNC('day', CAST("timestamp" AS TIMESTAMP)) AS observation_day,
+          service_name,
+          endpoint,
+          COUNT(*) as request_count,
+          AVG(latency_ms) as avg_latency_ms,
+          approx_percentile(latency_ms, 0.95) AS p95_latency_ms
+      FROM ${OBS_RAW_CATALOG}.${OBS_RAW_SCHEMA}.app_traces
+      WHERE http_status < 500
+      GROUP BY 1, 2, 3
+      ORDER BY observation_day DESC, p95_latency_ms DESC
+
+    columns:
+      - name: "observation_day"
+        type: "timestamp(3) with time zone"
+        description: "The day for which the latency metrics are aggregated."
+      - name: "p95_latency_ms"
+        type: "double"
+        description: "The 95th percentile request latency in milliseconds. 5% of users experienced this latency or worse."

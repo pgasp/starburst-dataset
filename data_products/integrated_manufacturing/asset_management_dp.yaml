@@ -1,0 +1,119 @@
+# integrated_manufacturing/asset_management_dp.yaml
+# --- ASSET MANAGEMENT & HEALTH DATA PRODUCT (MES/SCADA) ---
+name: "Manufacturing Asset Management & Health"
+description: |
+  This data product offers a unified view of the manufacturing asset lifecycle by integrating static master data with dynamic operational health metrics. It is designed to empower reliability engineering and maintenance teams.
+
+  **Key Objectives:**
+  - **Enable Predictive Maintenance:** Shift from reactive repairs to proactive interventions by identifying at-risk equipment.
+  - **Optimize Asset Lifecycle:** Provide data-driven insights for capital planning, asset replacement, and overhaul decisions.
+  - **Improve Uptime:** Reduce costly production downtime by focusing maintenance efforts on the most critical machinery.
+
+  **Business Questions Answered:**
+  1. What is the complete inventory of our production machinery, including age and maintenance history?
+  2. Which aging machines are exhibiting the highest rates of sensor anomalies, making them top candidates for replacement or overhaul?
+  3. Is there a correlation between a machine's type, its age, and its likelihood of generating production defects?
+summary: "Views for tracking machine details and identifying maintenance needs."
+
+# DATA PRODUCT DESTINATION (Schema 5: Asset Management)
+domain: "Integrated Manufacturing"
+catalog: ${MANUF_ASSET_DP_CATALOG}
+schema: ${MANUF_ASSET_DP_SCHEMA}
+
+owners:
+  - name: "Reliability Engineering"
+    email: "pascal.gasp@starburstdata.com"
+
+tags:
+  - "Asset Management"
+  - "Predictive Maintenance"
+  - "Reliability"
+  - "MES"
+  - "IoT"
+
+# ==============================================================================
+# SEMANTIC VIEWS
+# ==============================================================================
+views:
+  
+  # 1. Machine Asset Overview
+  - name: "v_machine_asset_overview"
+    description: "Provides a comprehensive list of all manufacturing machines, enriched with key metadata such as type, location, and age. This view serves as a master inventory for all production assets, essential for capital planning and asset tracking across different factory locations."
+    
+    query: |
+      SELECT
+          m.MachineID,
+          m.MachineType,
+          m.Location,
+          m.InstallDate,
+          m.LastMaintenanceDate,
+          DATE_DIFF('year', CAST(m.InstallDate AS TIMESTAMP), NOW()) AS MachineAge_Years
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.mes_machine_master m
+      ORDER BY MachineAge_Years DESC
+
+    columns:
+      - name: "MachineID"
+        type: "varchar"
+        description: "The unique identifier for the machine asset."
+      - name: "MachineType"
+        type: "varchar"
+        description: "The category of the machine (e.g., CNC Mill, Assembly Robot)."
+      - name: "Location"
+        type: "varchar"
+        description: "The factory floor location where the asset is installed."
+      - name: "InstallDate"
+        type: "timestamp(3)"
+        description: "The date the machine was commissioned."
+      - name: "LastMaintenanceDate"
+        type: "timestamp(3)"
+        description: "The date of the last recorded preventative or corrective maintenance."
+      - name: "MachineAge_Years"
+        type: "bigint"
+        description: "The calculated age of the machine in years, based on its installation date."
+
+  # 2. Predictive Maintenance Watchlist
+  - name: "v_predictive_maintenance_watchlist"
+    description: "Identifies high-risk machines by correlating high sensor alarm rates from SCADA data with asset age and recent maintenance history. This actionable watchlist helps maintenance teams prioritize proactive interventions to prevent costly downtime, focusing on equipment that is both aging and showing signs of stress."
+
+    query: |
+      WITH TelemetryHealth AS (
+        SELECT
+            MachineID,
+            CAST(SUM(CASE WHEN Alarm_Flag = TRUE THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*) AS AlarmRate_Pct,
+            COUNT(*) AS TotalReadings
+        FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.scada_sensor_telemetry
+        GROUP BY 1
+        HAVING COUNT(*) > 100
+      )
+      SELECT
+          m.MachineID,
+          m.MachineType,
+          m.Location,
+          DATE_DIFF('year', CAST(m.InstallDate AS TIMESTAMP), NOW()) AS MachineAge_Years,
+          DATE_DIFF('day', CAST(m.LastMaintenanceDate AS TIMESTAMP), NOW()) AS DaysSinceLastMaintenance,
+          th.AlarmRate_Pct
+      FROM ${MANUF_RAW_CATALOG}.${MANUF_RAW_SCHEMA}.mes_machine_master m
+      JOIN TelemetryHealth th ON m.MachineID = th.MachineID
+      WHERE
+          th.AlarmRate_Pct > 5.0 OR DATE_DIFF('day', CAST(m.LastMaintenanceDate AS TIMESTAMP), NOW()) > 365
+      ORDER BY th.AlarmRate_Pct DESC, DaysSinceLastMaintenance DESC
+
+    columns:
+      - name: "MachineID"
+        type: "varchar"
+        description: "The unique identifier for the machine asset."
+      - name: "MachineType"
+        type: "varchar"
+        description: "The category of the machine."
+      - name: "Location"
+        type: "varchar"
+        description: "The factory floor location."
+      - name: "MachineAge_Years"
+        type: "bigint"
+        description: "The current age of the machine in years."
+      - name: "DaysSinceLastMaintenance"
+        type: "bigint"
+        description: "Number of days that have passed since the last recorded maintenance activity."
+      - name: "AlarmRate_Pct"
+        type: "double"
+        description: "The percentage of sensor readings from this machine that have triggered an alarm."
